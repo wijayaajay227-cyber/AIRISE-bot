@@ -7,6 +7,7 @@ import requests
 import json
 import os
 import re
+import base64
 import textwrap
 from dataclasses import dataclass, field
 from typing import Dict, Tuple, Optional, List, Any
@@ -31,8 +32,6 @@ LOGIN_USERNAME: str = "Swijaya07"
 LOGIN_PASSWORD: str = "000000"
 
 EXCHANGES: Dict[str, Dict[str, Any]] = {
-    "Binance Futures": {"id": ["binanceusdm"], "options": {}},
-    "Bybit": {"id": ["bybit"], "options": {"defaultType": "swap"}},
     "OKX": {"id": ["okx"], "options": {"defaultType": "swap"}},
     # Sejak ccxt v4, class Gate.io di-rename dari 'gateio' menjadi 'gate'.
     # Simpan beberapa kandidat nama supaya cocok di versi ccxt lama maupun baru.
@@ -71,37 +70,27 @@ MICIN_PRICE_MAX: float = 5.0
 MICIN_DEFAULT_COUNT: int = 100
 
 # =============================================================================
-# LOGO — ROBOT HEAD (ORIGINAL SVG, TRANSFORMER-INSPIRED TECH STYLE)
+# LOGO
 # =============================================================================
+# Logo AIRISE dipakai sebagai file gambar (PNG) yang di-embed sebagai base64,
+# bukan digambar ulang manual, supaya hasilnya persis sama dengan file asli.
+LOGO_PATH: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "airise_logo.png")
 
-ROBOT_LOGO_SVG: str = """
-<svg width="64" height="64" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="metalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#3a4a5c"/>
-      <stop offset="50%" stop-color="#5c7188"/>
-      <stop offset="100%" stop-color="#242f3a"/>
-    </linearGradient>
-    <linearGradient id="visorGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#00e5ff"/>
-      <stop offset="100%" stop-color="#2979ff"/>
-    </linearGradient>
-  </defs>
-  <path d="M50 6 L84 22 L84 58 Q84 78 50 94 Q16 78 16 58 L16 22 Z"
-        fill="url(#metalGrad)" stroke="#0d1520" stroke-width="2.5"/>
-  <path d="M50 6 L84 22 L84 30 L50 16 L16 30 L16 22 Z" fill="#7c93a8" opacity="0.6"/>
-  <rect x="26" y="38" width="48" height="16" rx="6" fill="url(#visorGrad)" opacity="0.95"/>
-  <rect x="30" y="42" width="14" height="6" rx="2" fill="#ffffff" opacity="0.55"/>
-  <rect x="56" y="42" width="14" height="6" rx="2" fill="#ffffff" opacity="0.35"/>
-  <path d="M20 60 L34 68 L34 78 L20 70 Z" fill="#20303f"/>
-  <path d="M80 60 L66 68 L66 78 L80 70 Z" fill="#20303f"/>
-  <circle cx="50" cy="66" r="4" fill="#ff3d3d"/>
-  <line x1="50" y1="6" x2="50" y2="-4" stroke="#5c7188" stroke-width="2.5"/>
-  <circle cx="50" cy="-6" r="4" fill="#00e5ff"/>
-  <path d="M16 30 L10 46 L16 58" fill="none" stroke="#20303f" stroke-width="2.5"/>
-  <path d="M84 30 L90 46 L84 58" fill="none" stroke="#20303f" stroke-width="2.5"/>
-</svg>
-"""
+@st.cache_data(show_spinner=False)
+def _load_logo_base64(path: str) -> Optional[str]:
+    try:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    except Exception:
+        return None
+
+def render_logo_img(height_px: int = 64, extra_style: str = "") -> str:
+    """Hasilkan tag <img> base64 dari logo AIRISE. Fallback ke emoji robot kalau file logo tidak ditemukan."""
+    b64 = _load_logo_base64(LOGO_PATH)
+    if not b64:
+        return f'<span style="font-size:{height_px}px;">🤖</span>'
+    return (f'<img src="data:image/png;base64,{b64}" '
+            f'style="height:{height_px}px; width:auto; display:block; {extra_style}" alt="AIRISE logo" />')
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -228,7 +217,7 @@ def _resolve_ccxt_class(candidate_ids: List[str]) -> Any:
 
 @st.cache_resource(show_spinner=False)
 def get_exchange(exchange_name: str) -> Any:
-    cfg = EXCHANGES.get(exchange_name, EXCHANGES["Binance Futures"])
+    cfg = EXCHANGES.get(exchange_name, next(iter(EXCHANGES.values())))
     exchange_class = _resolve_ccxt_class(cfg["id"])
     return exchange_class({"enableRateLimit": True, "options": cfg["options"]})
 
@@ -243,7 +232,7 @@ def get_symbols(exchange_name: str) -> List[str]:
 
 def resolve_symbol(target: str, all_symbols: List[str]) -> Optional[str]:
     """Cocokkan symbol populer (mis. 'BTC/USDT') ke format spesifik exchange
-    (mis. Bybit/OKX swap sering pakai 'BTC/USDT:USDT')."""
+    (mis. OKX/Gate.io swap sering pakai 'BTC/USDT:USDT')."""
     if target in all_symbols:
         return target
     base = target.split("/")[0]
@@ -900,7 +889,7 @@ def reason_explanation(reason: str) -> str:
 # - Bot memantau SL/TP dengan cara mengecek harga tiap tick lalu mengirim
 #   market close order sendiri. Artinya kalau bot berhenti / koneksi putus,
 #   posisi TIDAK otomatis terlindungi oleh exchange (beda dari native
-#   stop-order). Untuk Binance Futures, bot mencoba memasang native
+#   stop-order). Untuk exchange yang didukung, bot mencoba memasang native
 #   STOP_MARKET/TAKE_PROFIT_MARKET sebagai jaring pengaman tambahan
 #   (best-effort, tidak menggantikan pemantauan bot).
 # - API key/secret hanya disimpan di st.session_state (memori server selama
@@ -956,7 +945,7 @@ def connect_live_exchange(exchange_name: str, api_key: str, api_secret: str) -> 
     if not api_key or not api_secret:
         return None, "API Key / Secret kosong."
     try:
-        cfg = EXCHANGES.get(exchange_name, EXCHANGES["Binance Futures"])
+        cfg = EXCHANGES.get(exchange_name, next(iter(EXCHANGES.values())))
         exchange_class = _resolve_ccxt_class(cfg["id"])
         client = exchange_class({
             "apiKey": api_key,
@@ -1021,16 +1010,12 @@ def place_live_exit(client: Any, symbol: str, direction: str, amount: float) -> 
 
 def try_place_native_protection(client: Any, exchange_name: str, symbol: str, direction: str,
                                  amount: float, sl: float, tp2: float) -> None:
-    if exchange_name != "Binance Futures":
-        return
-    try:
-        close_side = "sell" if direction == "LONG" else "buy"
-        client.create_order(symbol, "STOP_MARKET", close_side, amount,
-                             params={"stopPrice": sl, "closePosition": True})
-        client.create_order(symbol, "TAKE_PROFIT_MARKET", close_side, amount,
-                             params={"stopPrice": tp2, "closePosition": True})
-    except Exception:
-        pass
+    # Catatan: sebelumnya fitur ini hanya aktif untuk "Binance Futures" (order type
+    # STOP_MARKET/TAKE_PROFIT_MARKET khas Binance). Karena Binance Futures sudah
+    # dihilangkan dari daftar exchange (lihat EXCHANGES), fungsi ini untuk saat ini
+    # selalu no-op (aman, tidak error) sampai native stop-order khusus OKX/Gate.io
+    # ditambahkan. Bot tetap memantau SL/TP sendiri lewat simulate_live_step().
+    return
 
 def cancel_all_open_orders(client: Any, symbol: str) -> None:
     try:
@@ -2146,20 +2131,40 @@ def render_mtf_ui() -> bool:
     return st.checkbox("Enable MTF", value=True)
 
 # =============================================================================
-# STYLE — BACKGROUND & LOGO BERTEMA ROBOT/TRANSFORMER
+# STYLE — BACKGROUND & LOGO (TEMA ROBOT/MECHA BIRU-PUTIH, SESUAI LOGO AIRISE)
 # =============================================================================
 
 def inject_transformer_theme() -> None:
     css = f"""
 <style>
+html {{
+    scroll-behavior: smooth;
+}}
+/* ------------------------------------------------------------------ */
+/* SCROLL SMOOTH DI HP: momentum-scroll iOS + smooth-scroll utk semua  */
+/* container yang bisa discroll (halaman utama, sidebar, dataframe,    */
+/* text area, dsb). GPU-accelerated supaya tidak patah-patah di mobile.*/
+/* ------------------------------------------------------------------ */
+.stApp, .main, section[data-testid="stSidebar"],
+div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
+.block-container {{
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+}}
+* {{
+    -webkit-tap-highlight-color: transparent;
+}}
 .stApp {{
     font-size: 12px;
+    overscroll-behavior-y: contain;
     background:
         radial-gradient(circle at 15% 10%, rgba(0,229,255,0.10) 0%, transparent 40%),
         radial-gradient(circle at 85% 85%, rgba(255,61,61,0.08) 0%, transparent 40%),
         repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 2px, transparent 2px, transparent 26px),
         linear-gradient(160deg, #10161d 0%, #1b2530 45%, #0d1218 100%);
     background-attachment: fixed;
+    transform: translateZ(0);
+    will-change: scroll-position;
 }}
 .airise-header {{
     display: flex; align-items: center; gap: 14px;
@@ -2171,12 +2176,20 @@ def inject_transformer_theme() -> None:
 }}
 .airise-title {{
     font-size: 26px; font-weight: 800; letter-spacing: 1px;
-    background: linear-gradient(90deg, #00e5ff, #7c93a8, #ff3d3d);
+    background: linear-gradient(90deg, #2f7fd6, #6fa8dc, #2f7fd6);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     margin: 0;
 }}
 .airise-tagline {{
     font-size: 12px; color: #8aa0b5; margin: 0; letter-spacing: 0.5px;
+}}
+/* --- Toggle sidebar (tombol Menu kustom, tampil jelas di mobile) --- */
+.airise-menu-btn button {{
+    background: linear-gradient(90deg, #2979ff, #00e5ff) !important;
+    color: #08131c !important;
+    font-weight: 700 !important;
+    border: none !important;
+    border-radius: 8px !important;
 }}
 /* --- Metric cards: angka diperkecil & dirapikan dalam grid/kolom --- */
 div[data-testid="stMetric"] {{
@@ -2218,10 +2231,32 @@ section[data-testid="stSidebar"] {{
 """
     st.markdown(css, unsafe_allow_html=True)
 
+def render_sidebar_toggle_button() -> None:
+    """Tombol eksplisit untuk buka/tutup sidebar — memudahkan di HP karena
+    panah collapse bawaan Streamlit kadang kecil/susah ditekan di layar sentuh.
+    Status disimpan di session_state dan sidebar disembunyikan lewat CSS."""
+    if "sidebar_open" not in st.session_state:
+        st.session_state.sidebar_open = True
+
+    label = "☰ Tutup Menu" if st.session_state.sidebar_open else "☰ Buka Menu"
+    st.markdown('<div class="airise-menu-btn">', unsafe_allow_html=True)
+    if st.button(label, key="sidebar_toggle_btn", use_container_width=False):
+        st.session_state.sidebar_open = not st.session_state.sidebar_open
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if not st.session_state.sidebar_open:
+        st.markdown(
+            """<style>
+            section[data-testid="stSidebar"] { display: none !important; }
+            </style>""",
+            unsafe_allow_html=True
+        )
+
 def render_header() -> None:
-    logo = textwrap.dedent(ROBOT_LOGO_SVG).strip()
+    logo_img = render_logo_img(height_px=56)
     header_html = (
-        f'<div class="airise-header">{logo}'
+        f'<div class="airise-header">{logo_img}'
         f'<div><p class="airise-title">{BOT_NAME}</p>'
         f'<p class="airise-tagline">{BOT_TAGLINE} · 7 Indikator + MTF nyata + Backtesting + Live Price + Coin Scanner</p>'
         f'</div></div>'
@@ -2235,6 +2270,7 @@ def render_header() -> None:
 def inject_login_theme() -> None:
     css = """
 <style>
+html { scroll-behavior: smooth; }
 .block-container {
     max-width: 380px !important;
     padding-top: 4.5rem !important;
@@ -2250,7 +2286,7 @@ def inject_login_theme() -> None:
     font-size: 25px;
     font-weight: 800;
     letter-spacing: 1px;
-    background: linear-gradient(90deg, #00e5ff, #7c93a8, #ff3d3d);
+    background: linear-gradient(90deg, #2f7fd6, #6fa8dc, #2f7fd6);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     margin: 4px 0 2px 0;
 }
@@ -2324,8 +2360,8 @@ div[data-testid="stFormSubmitButton"] button:hover {
     st.markdown(css, unsafe_allow_html=True)
 
 def render_login_page() -> None:
-    logo = textwrap.dedent(ROBOT_LOGO_SVG).strip()
-    st.markdown(f'<div class="login-logo-wrap">{logo}</div>', unsafe_allow_html=True)
+    logo_img = render_logo_img(height_px=110)
+    st.markdown(f'<div class="login-logo-wrap">{logo_img}</div>', unsafe_allow_html=True)
     st.markdown(f'<p class="login-title">{BOT_NAME}</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="login-subtitle">Masuk untuk mengakses Analyzer &amp; Live Trading</p>',
@@ -2377,12 +2413,13 @@ def main() -> None:
         st.stop()
 
     render_header()
+    render_sidebar_toggle_button()
     st.warning("⚠️ Bukan nasihat keuangan. Selalu DYOR!")
 
     if "selected_symbol" not in st.session_state:
         st.session_state.selected_symbol = "BTC/USDT"
     if "exchange_name" not in st.session_state:
-        st.session_state.exchange_name = "Binance Futures"
+        st.session_state.exchange_name = next(iter(EXCHANGES.keys()))
     if "timeframe" not in st.session_state:
         st.session_state.timeframe = "15m"
 
