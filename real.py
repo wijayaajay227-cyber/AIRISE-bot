@@ -70,27 +70,81 @@ MICIN_PRICE_MAX: float = 5.0
 MICIN_DEFAULT_COUNT: int = 100
 
 # =============================================================================
+# PENYIMPANAN PERMANEN (riwayat trade & lokasi file)
+# =============================================================================
+# Disimpan di disk (JSON) supaya riwayat trade TIDAK hilang saat tab/browser
+# ditutup atau halaman di-refresh — beda dengan st.session_state yang hanya
+# hidup selama satu sesi browser. Catatan: kalau di-deploy di layanan yang
+# filesystem-nya efemeral tiap kali redeploy (mis. beberapa PaaS gratis),
+# riwayat tetap akan hilang saat container benar-benar diganti — makanya
+# disediakan juga tombol Export CSV di UI sebagai cadangan.
+_BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
+TRADE_HISTORY_DIR: str = os.path.join(_BASE_DIR, "airise_data")
+TRADE_HISTORY_FILE: str = os.path.join(TRADE_HISTORY_DIR, "trade_history.json")
+MAX_HISTORY_RECORDS: int = 3000
+
+# =============================================================================
 # LOGO
 # =============================================================================
-# Logo AIRISE dipakai sebagai file gambar (PNG) yang di-embed sebagai base64,
-# bukan digambar ulang manual, supaya hasilnya persis sama dengan file asli.
-LOGO_PATH: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "airise_logo.png")
+# Logo AIRISE dipakai sebagai file gambar (PNG) yang di-embed sebagai base64.
+# FIX: sebelumnya logo tidak muncul kalau file assets/airise_logo.png tidak
+# ketemu PERSIS di folder yang sama dengan script ini, dan fallback-nya cuma
+# emoji polos. Sekarang:
+#  1) Dicoba beberapa lokasi kandidat (folder script, folder script/assets,
+#     current working directory, cwd/assets) supaya tetap ketemu walau
+#     struktur folder deployment sedikit berbeda.
+#  2) Kalau tetap tidak ketemu, fallback bukan cuma emoji tapi SVG "robot"
+#     bertema biru-cyan yang digambar langsung (vector, selalu tampil rapi
+#     di ukuran berapa pun, tidak tergantung file gambar eksternal sama sekali).
+LOGO_FILENAME: str = "airise_logo.png"
+LOGO_CANDIDATE_PATHS: List[str] = [
+    os.path.join(_BASE_DIR, "assets", LOGO_FILENAME),
+    os.path.join(_BASE_DIR, LOGO_FILENAME),
+    os.path.join(os.getcwd(), "assets", LOGO_FILENAME),
+    os.path.join(os.getcwd(), LOGO_FILENAME),
+]
+
+_FALLBACK_ROBOT_SVG: str = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" style="height:{h}px;width:auto;display:block;{extra}">
+  <defs>
+    <linearGradient id="airiseGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2979ff"/>
+      <stop offset="100%" stop-color="#00e5ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="14" y="22" width="36" height="28" rx="8" fill="url(#airiseGrad)" opacity="0.18" stroke="url(#airiseGrad)" stroke-width="2.5"/>
+  <circle cx="25" cy="36" r="4.2" fill="#00e5ff"/>
+  <circle cx="39" cy="36" r="4.2" fill="#2979ff"/>
+  <rect x="27" y="44" width="10" height="3" rx="1.5" fill="#6fa8dc"/>
+  <line x1="32" y1="22" x2="32" y2="12" stroke="url(#airiseGrad)" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="32" cy="9" r="3.2" fill="#00e5ff"/>
+  <rect x="8" y="30" width="6" height="12" rx="3" fill="#2979ff" opacity="0.7"/>
+  <rect x="50" y="30" width="6" height="12" rx="3" fill="#00e5ff" opacity="0.7"/>
+</svg>
+"""
 
 @st.cache_data(show_spinner=False)
-def _load_logo_base64(path: str) -> Optional[str]:
-    try:
-        with open(path, "rb") as f:
-            return base64.b64encode(f.read()).decode("utf-8")
-    except Exception:
-        return None
+def _load_logo_base64() -> Optional[str]:
+    for path in LOGO_CANDIDATE_PATHS:
+        try:
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        except Exception:
+            continue
+    return None
 
 def render_logo_img(height_px: int = 64, extra_style: str = "") -> str:
-    """Hasilkan tag <img> base64 dari logo AIRISE. Fallback ke emoji robot kalau file logo tidak ditemukan."""
-    b64 = _load_logo_base64(LOGO_PATH)
+    """Hasilkan tag <img> base64 dari logo AIRISE kalau file-nya ketemu di salah
+    satu LOGO_CANDIDATE_PATHS. Kalau tidak ketemu sama sekali, pakai SVG robot
+    vector bawaan supaya header tetap terlihat bagus tanpa bergantung file luar."""
+    b64 = _load_logo_base64()
     if not b64:
-        return f'<span style="font-size:{height_px}px;">🤖</span>'
+        return _FALLBACK_ROBOT_SVG.format(h=height_px, extra=extra_style)
     return (f'<img src="data:image/png;base64,{b64}" '
             f'style="height:{height_px}px; width:auto; display:block; {extra_style}" alt="AIRISE logo" />')
+
+def logo_file_found() -> bool:
+    return _load_logo_base64() is not None
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -329,6 +383,150 @@ def find_micin_candidates(exchange_name: str, price_min: float = MICIN_PRICE_MIN
 
     candidates.sort(key=lambda x: x[2], reverse=True)
     return [c[0] for c in candidates[:count]]
+
+# =============================================================================
+# MARKET CAP / TRENDING (CoinGecko) — "coin apa yang lagi hype"
+# =============================================================================
+# Fitur ini terpisah dari exchange futures (OKX/Gate.io) di atas — datanya dari
+# CoinGecko public API (tidak butuh API key) supaya bisa lihat ranking market
+# cap global & daftar coin yang sedang paling banyak dicari (trending),
+# terlepas dari coin itu ada di exchange futures kamu atau tidak.
+
+COINGECKO_MARKETS_URL: str = "https://api.coingecko.com/api/v3/coins/markets"
+COINGECKO_TRENDING_URL: str = "https://api.coingecko.com/api/v3/search/trending"
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_market_overview(vs_currency: str = "usd", per_page: int = 100) -> pd.DataFrame:
+    """Ambil ranking market cap terbesar (global, semua exchange) dari CoinGecko."""
+    try:
+        params = {
+            "vs_currency": vs_currency,
+            "order": "market_cap_desc",
+            "per_page": per_page,
+            "page": 1,
+            "sparkline": "false",
+            "price_change_percentage": "1h,24h,7d",
+        }
+        r = requests.get(COINGECKO_MARKETS_URL, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        df = pd.DataFrame(data)
+        return df
+    except Exception as e:
+        return pd.DataFrame({"_error": [str(e)]})
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_trending_coins() -> List[Dict[str, Any]]:
+    """Ambil daftar coin yang sedang paling banyak dicari orang di CoinGecko
+    (proxy untuk 'coin yang lagi hype/hive' walau bukan dari volume futures)."""
+    try:
+        r = requests.get(COINGECKO_TRENDING_URL, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return [c.get("item", {}) for c in data.get("coins", [])]
+    except Exception:
+        return []
+
+def render_market_overview_ui() -> None:
+    st.markdown("### 📈 Market Cap & Trending (Global — CoinGecko)")
+    st.caption(
+        "Data ranking market cap & coin yang sedang trending diambil dari CoinGecko (sumber publik, "
+        "berlaku global — bukan cuma dari exchange futures OKX/Gate.io kamu). Berguna untuk melihat "
+        "coin mana yang 'lagi hype' sebelum dicek lebih dalam di Coin Scanner / Grafik & Analisa."
+    )
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        per_page = st.slider("Jumlah coin (ranking market cap)", 20, 250, 100, 10, key="mc_per_page")
+    with col_b:
+        st.write("")
+        refresh_mc = st.button("🔄 Refresh Data", use_container_width=True, key="mc_refresh_btn")
+    if refresh_mc:
+        get_market_overview.clear()
+        get_trending_coins.clear()
+
+    df = get_market_overview(per_page=per_page)
+    if df.empty or "_error" in df.columns:
+        err = df["_error"].iloc[0] if "_error" in df.columns and not df.empty else "Tidak ada data."
+        st.warning(
+            f"⚠️ Gagal mengambil data CoinGecko ({err}). Ini biasanya karena koneksi internet keluar "
+            "(egress) diblokir di lingkungan saat ini, atau rate-limit publik CoinGecko sedang penuh. "
+            "Di server deployment kamu sendiri (mis. Streamlit Cloud/VPS) fitur ini akan jalan normal "
+            "selama ada akses internet keluar ke api.coingecko.com."
+        )
+        return
+
+    show = df[[
+        "market_cap_rank", "symbol", "name", "current_price", "market_cap",
+        "total_volume", "price_change_percentage_1h_in_currency",
+        "price_change_percentage_24h_in_currency", "price_change_percentage_7d_in_currency",
+    ]].copy()
+    show.columns = ["Rank", "Symbol", "Nama", "Harga", "Market Cap", "Volume 24h", "1h %", "24h %", "7d %"]
+    show["Symbol"] = show["Symbol"].str.upper()
+    show["Harga"] = show["Harga"].apply(lambda x: f"${format_price(x)}")
+    show["Market Cap"] = show["Market Cap"].apply(lambda x: f"${format_volume(x)}")
+    show["Volume 24h"] = show["Volume 24h"].apply(lambda x: f"${format_volume(x)}")
+    for c in ["1h %", "24h %", "7d %"]:
+        show[c] = show[c].apply(lambda x: format_percentage(x) if pd.notna(x) else "-")
+
+    top_gainers = df.sort_values("price_change_percentage_24h_in_currency", ascending=False).head(10)
+    top_losers = df.sort_values("price_change_percentage_24h_in_currency", ascending=True).head(10)
+
+    m1, m2 = st.columns(2)
+    with m1:
+        st.markdown("#### 🚀 Top Gainer 24h")
+        g = top_gainers[["symbol", "current_price", "price_change_percentage_24h_in_currency"]].copy()
+        g.columns = ["Symbol", "Harga", "24h %"]
+        g["Symbol"] = g["Symbol"].str.upper()
+        g["Harga"] = g["Harga"].apply(lambda x: f"${format_price(x)}")
+        g["24h %"] = g["24h %"].apply(format_percentage)
+        st.dataframe(g, use_container_width=True, hide_index=True, height=280)
+    with m2:
+        st.markdown("#### 📉 Top Loser 24h")
+        l = top_losers[["symbol", "current_price", "price_change_percentage_24h_in_currency"]].copy()
+        l.columns = ["Symbol", "Harga", "24h %"]
+        l["Symbol"] = l["Symbol"].str.upper()
+        l["Harga"] = l["Harga"].apply(lambda x: f"${format_price(x)}")
+        l["24h %"] = l["24h %"].apply(format_percentage)
+        st.dataframe(l, use_container_width=True, hide_index=True, height=280)
+
+    st.markdown("---")
+    st.markdown("#### 🔥 Sedang Trending (Paling Banyak Dicari)")
+    trending = get_trending_coins()
+    if trending:
+        base_syms: List[str] = []
+        t_cols = st.columns(5)
+        for i, item in enumerate(trending[:10]):
+            sym = (item.get("symbol") or "").upper()
+            name = item.get("name", "-")
+            rank = item.get("market_cap_rank", "-")
+            if sym:
+                base_syms.append(sym)
+            with t_cols[i % 5]:
+                st.markdown(
+                    f"""<div style="border:1px solid rgba(0,229,255,0.25); border-radius:10px;
+                    padding:8px 10px; margin-bottom:8px; background:rgba(255,255,255,0.03);">
+                    <div style="font-weight:700; color:#00e5ff; font-size:12px;">#{i+1} {sym}</div>
+                    <div style="font-size:10.5px; color:#8aa0b5;">{name}</div>
+                    <div style="font-size:10px; color:#5c7188;">MCap Rank: {rank}</div>
+                    </div>""", unsafe_allow_html=True
+                )
+        jc1, jc2 = st.columns([1, 2])
+        with jc1:
+            if st.button("📥 Kirim Trending ke Coin Scanner", use_container_width=True, key="send_trending_to_scanner"):
+                symbols_str = ", ".join(f"{s}/USDT" for s in dict.fromkeys(base_syms))
+                st.session_state["scanner_symbols_input"] = symbols_str
+                st.session_state.active_section = "scanner"
+                st.rerun()
+        with jc2:
+            st.caption("Coin trending akan dimasukkan otomatis ke daftar Coin Scanner supaya bisa langsung dianalisa teknikal-nya.")
+    else:
+        st.caption("Data trending tidak tersedia saat ini.")
+
+    st.markdown("---")
+    st.markdown(f"#### 📋 Ranking Market Cap (Top {len(show)})")
+    st.dataframe(show, use_container_width=True, hide_index=True, height=420)
+    st.caption("💡 Bukan nasihat keuangan. Market cap besar & trending tidak selalu berarti aman untuk entry — tetap DYOR.")
 
 # =============================================================================
 # INDIKATOR TEKNIKAL
@@ -632,19 +830,7 @@ def analyze_single_timeframe(df: pd.DataFrame) -> Signal:
 
 def apply_mtf_confirmation(signal: Signal, exchange_name: str, symbol: str, timeframe: str,
                             limit: int = 250) -> Signal:
-    """Konfirmasi sinyal timeframe utama terhadap timeframe LEBIH BESAR (mengisi
-    fitur 'Enable MTF' yang sebelumnya cuma checkbox tanpa logika sama sekali).
-
-    Aturan:
-    - Ambil 1 timeframe lebih tinggi dari MTF_HIGHER, hitung sinyalnya juga.
-    - Kalau arah HTF SAMA dengan arah sinyal utama -> skor ditambah bonus &
-      status "Aligned" (lebih dipercaya).
-    - Kalau arah HTF BERLAWANAN -> skor dikurangi/didinginkan, dan kalau
-      sinyal awalnya BUY/SELL, di-downgrade jadi HOLD (menandakan konflik
-      antar timeframe, jangan entry melawan tren besar).
-    - Kalau HTF juga HOLD/data kurang -> tidak ada perubahan, cuma ditandai
-      "Netral / tidak cukup data".
-    """
+    """Konfirmasi sinyal timeframe utama terhadap timeframe LEBIH BESAR."""
     higher_tfs = MTF_HIGHER.get(timeframe)
     if not higher_tfs:
         return signal
@@ -682,7 +868,6 @@ def apply_mtf_confirmation(signal: Signal, exchange_name: str, symbol: str, time
         signal.mtf_aligned = False
         signal.reasons = (signal.reasons + [f"⚠️ MTF {htf} berlawanan ({htf_signal.direction}) — sinyal didinginkan"])[:15]
         if signal.direction in ("BUY", "SELL"):
-            # Downgrade jadi HOLD kalau melawan tren timeframe lebih besar
             signal.direction = "HOLD"
             signal.is_actionable = False
             signal.confidence = "Rendah (konflik MTF)"
@@ -691,13 +876,7 @@ def apply_mtf_confirmation(signal: Signal, exchange_name: str, symbol: str, time
 
 
 def compute_pump_score(df: pd.DataFrame) -> Tuple[float, List[str]]:
-    """Heuristik terpisah dari signal engine utama, khusus untuk menandai coin
-    yang MULAI menunjukkan tanda-tanda awal 'pump' (lonjakan momentum jangka
-    pendek) — sering dicari di coin micin ber-cap kecil/murah. Ini BUKAN
-    prediksi, hanya kombinasi beberapa pola teknikal yang sering muncul di awal
-    pergerakan naik cepat: lonjakan volume, RSI baru bangkit dari area rendah,
-    histogram MACD berbalik naik, dan breakout dari BB midline.
-    Return: (pump_score 0-10, list tag alasan singkat)"""
+    """Heuristik momentum jangka pendek (BUKAN prediksi) untuk coin micin."""
     if len(df) < 25:
         return 0.0, []
 
@@ -759,7 +938,7 @@ def compute_pump_score(df: pd.DataFrame) -> Tuple[float, List[str]]:
 
 
 # =============================================================================
-# PENJELASAN DETAIL UNTUK "REASONS" (mudah dipahami, non-teknis)
+# PENJELASAN DETAIL UNTUK "REASONS"
 # =============================================================================
 
 def reason_sentiment(reason: str) -> str:
@@ -843,7 +1022,7 @@ def reason_explanation(reason: str) -> str:
         ("Above Avg Volume",
          "Volume transaksi sedikit di atas rata-rata — partisipasi pasar mulai meningkat, memberi sedikit "
          "tambahan keyakinan pada arah sinyal yang terbentuk."),
-        ("MTF", 
+        ("MTF",
          "Konfirmasi Multi-Timeframe: sinyal di timeframe utama dibandingkan dengan timeframe yang lebih besar. "
          "Kalau searah, keyakinan bertambah. Kalau berlawanan, sinyal didinginkan/diturunkan jadi HOLD karena "
          "melawan tren yang lebih besar biasanya berisiko lebih tinggi."),
@@ -878,27 +1057,77 @@ def reason_explanation(reason: str) -> str:
     return "Faktor ini turut berkontribusi pada total skor sinyal di atas."
 
 # =============================================================================
+# RIWAYAT TRADE PERMANEN (disk)
+# =============================================================================
+
+def _ensure_history_dir() -> None:
+    try:
+        os.makedirs(TRADE_HISTORY_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+def _serialize_trade(trade: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(trade)
+    for k in ("entry_time", "exit_time"):
+        v = out.get(k)
+        if isinstance(v, datetime):
+            out[k] = v.isoformat()
+    out.pop("current_price", None)
+    return out
+
+def load_trade_history_from_disk() -> List[Dict[str, Any]]:
+    """Baca seluruh riwayat trade yang sudah pernah disimpan ke disk (lintas sesi/browser)."""
+    _ensure_history_dir()
+    try:
+        if not os.path.exists(TRADE_HISTORY_FILE):
+            return []
+        with open(TRADE_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def append_trade_to_disk(trade: Dict[str, Any], context: Tuple[str, str, str], mode: str) -> None:
+    """Simpan 1 trade yang baru saja ditutup ke file JSON permanen di disk.
+    Dipanggil setiap kali posisi ditutup (SL/TP/reverse/manual), baik mode
+    SIM maupun LIVE, supaya riwayat tidak hilang meski tab/browser ditutup."""
+    _ensure_history_dir()
+    try:
+        history = load_trade_history_from_disk()
+        record = _serialize_trade(trade)
+        record["exchange"] = context[0]
+        record["symbol_context"] = context[1]
+        record["timeframe"] = context[2]
+        record["sim_mode"] = mode
+        uid = f"{record.get('entry_time')}_{record.get('symbol_context')}_{record.get('direction')}_{record.get('entry_price')}"
+        record["trade_uid"] = uid
+        if any(h.get("trade_uid") == uid for h in history):
+            return
+        history.append(record)
+        if len(history) > MAX_HISTORY_RECORDS:
+            history = history[-MAX_HISTORY_RECORDS:]
+        with open(TRADE_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def trade_history_dataframe(history: List[Dict[str, Any]]) -> pd.DataFrame:
+    if not history:
+        return pd.DataFrame()
+    df = pd.DataFrame(history)
+    keep = ["entry_time", "exit_time", "exchange", "symbol_context", "timeframe", "sim_mode",
+            "direction", "entry_price", "exit_price", "profit_pct", "pnl_usdt", "exit_reason"]
+    keep = [c for c in keep if c in df.columns]
+    return df[keep]
+
+# =============================================================================
 # LIVE SIMULATOR / LIVE TRADING ENGINE
 # =============================================================================
-# Dua mode:
-#   - "SIM"  -> paper trading, tidak menyentuh akun exchange sama sekali.
-#   - "LIVE" -> mengeksekusi order MARKET sungguhan ke akun futures kamu
-#               memakai API key yang kamu masukkan sendiri di sesi ini.
-#
-# PENTING (baca sebelum pakai mode LIVE):
-# - Bot memantau SL/TP dengan cara mengecek harga tiap tick lalu mengirim
-#   market close order sendiri. Artinya kalau bot berhenti / koneksi putus,
-#   posisi TIDAK otomatis terlindungi oleh exchange (beda dari native
-#   stop-order). Untuk exchange yang didukung, bot mencoba memasang native
-#   STOP_MARKET/TAKE_PROFIT_MARKET sebagai jaring pengaman tambahan
-#   (best-effort, tidak menggantikan pemantauan bot).
-# - API key/secret hanya disimpan di st.session_state (memori server selama
-#   sesi berjalan), tidak ditulis ke disk atau dikirim ke pihak ketiga.
-# - Selalu pakai API key dengan pembatasan IP & TANPA izin withdraw.
 
 SIM_STATE_KEY: str = "live_sim"
 LIVE_CREDS_KEY: str = "live_creds"
 CONFIRM_PHRASE: str = "SAYA PAHAM RISIKONYA"
+DEFAULT_SIGNAL_RECALC_EVERY: int = 3  # sinyal & indikator dihitung ulang tiap N tick, harga tetap tiap tick
 
 def _empty_sim_state(initial_capital: float, risk_per_trade: float, context: Tuple[str, str, str]) -> Dict[str, Any]:
     now = datetime.now()
@@ -919,6 +1148,9 @@ def _empty_sim_state(initial_capital: float, risk_per_trade: float, context: Tup
         "trades": [],
         "equity_curve": [{"time": now, "equity": initial_capital}],
         "last_signal": None,
+        "cached_signal": None,
+        "ticks_since_signal": 0,
+        "signal_recalc_every": DEFAULT_SIGNAL_RECALC_EVERY,
         "last_update": None,
         "tick_count": 0,
         "log": [],
@@ -1010,11 +1242,6 @@ def place_live_exit(client: Any, symbol: str, direction: str, amount: float) -> 
 
 def try_place_native_protection(client: Any, exchange_name: str, symbol: str, direction: str,
                                  amount: float, sl: float, tp2: float) -> None:
-    # Catatan: sebelumnya fitur ini hanya aktif untuk "Binance Futures" (order type
-    # STOP_MARKET/TAKE_PROFIT_MARKET khas Binance). Karena Binance Futures sudah
-    # dihilangkan dari daftar exchange (lihat EXCHANGES), fungsi ini untuk saat ini
-    # selalu no-op (aman, tidak error) sampai native stop-order khusus OKX/Gate.io
-    # ditambahkan. Bot tetap memantau SL/TP sendiri lewat simulate_live_step().
     return
 
 def cancel_all_open_orders(client: Any, symbol: str) -> None:
@@ -1025,13 +1252,6 @@ def cancel_all_open_orders(client: Any, symbol: str) -> None:
 
 def _close_trade_and_update_capital(sim: Dict[str, Any], pos: Dict[str, Any], exit_price: float,
                                      exit_reason: str, now: datetime) -> Dict[str, Any]:
-    """FIX: sebelumnya capital di-update dengan `capital *= (1 + profit_pct/100)`,
-    artinya SELURUH capital dianggap ikut bergerak sebesar %-perubahan harga —
-    ini membuat slider 'Risk per Trade' dan 'Leverage' tidak berpengaruh sama
-    sekali ke hasil simulasi (entry $100 atau $10000 hasilnya identik).
-    Sekarang PnL dihitung dalam USDT riil = position_size (unit koin) x selisih
-    harga, baru ditambahkan ke capital — jadi position sizing & leverage benar2
-    memengaruhi hasil, sama seperti trading futures sungguhan."""
     if pos["direction"] == "LONG":
         pnl_usdt = pos["position_size"] * (exit_price - pos["entry_price"])
     else:
@@ -1049,10 +1269,22 @@ def _close_trade_and_update_capital(sim: Dict[str, Any], pos: Dict[str, Any], ex
     })
     sim["trades"].append(trade)
     sim["position"] = None
+
+    # FITUR BARU: simpan ke disk supaya riwayat trade tetap ada walau tab
+    # ditutup / halaman direfresh / server restart (selama disk yang sama).
+    append_trade_to_disk(trade, sim["context"], sim["mode"])
+
     return trade
 
 def simulate_live_step(exchange_name: str, symbol: str, timeframe: str, limit: int = 300,
-                        mtf_enabled: bool = True) -> Optional[str]:
+                        mtf_enabled: bool = True, fast_tick: bool = False) -> Optional[str]:
+    """FITUR BARU (refresh lebih smooth): saat fast_tick=True, harga tetap
+    diambil setiap tick (murah, sudah di-cache ttl 10s oleh get_live_data),
+    tapi indikator + sinyal (OHLCV, EMA/RSI/MACD/dst — lebih berat dihitung)
+    HANYA dihitung ulang tiap `signal_recalc_every` tick, sisanya memakai
+    sinyal yang sudah di-cache di sim['cached_signal']. Posisi terbuka & SL/TP
+    tetap dicek terhadap harga TERBARU tiap tick (tidak menunggu recompute),
+    jadi PnL & status posisi terasa lebih mulus/real-time tanpa membebani CPU."""
     sim = st.session_state.get(SIM_STATE_KEY)
     if sim is None or not sim.get("running", False):
         return None
@@ -1061,16 +1293,32 @@ def simulate_live_step(exchange_name: str, symbol: str, timeframe: str, limit: i
         sim["running"] = False
         return "⚠️ Mode LIVE belum di-arm. Simulasi dihentikan."
 
-    df = get_ohlcv(exchange_name, symbol, timeframe, limit)
-    if df.empty or len(df) < 55:
-        return "Data candle belum cukup."
-    df = add_indicators(df)
-    signal = analyze_single_timeframe(df)
-    if mtf_enabled:
-        signal = apply_mtf_confirmation(signal, exchange_name, symbol, timeframe, limit=min(limit, 250))
+    need_full_recalc = (
+        not fast_tick
+        or sim.get("cached_signal") is None
+        or sim.get("ticks_since_signal", 0) >= sim.get("signal_recalc_every", DEFAULT_SIGNAL_RECALC_EVERY)
+    )
+
+    if need_full_recalc:
+        df = get_ohlcv(exchange_name, symbol, timeframe, limit)
+        if df.empty or len(df) < 55:
+            return "Data candle belum cukup."
+        df = add_indicators(df)
+        signal = analyze_single_timeframe(df)
+        if mtf_enabled:
+            signal = apply_mtf_confirmation(signal, exchange_name, symbol, timeframe, limit=min(limit, 250))
+        sim["cached_signal"] = signal
+        sim["ticks_since_signal"] = 0
+        last_atr = float(df.iloc[-1].get("atr_14", np.nan))
+        sim["_last_atr"] = last_atr if (last_atr and not np.isnan(last_atr)) else None
+    else:
+        signal = sim["cached_signal"]
+        sim["ticks_since_signal"] = sim.get("ticks_since_signal", 0) + 1
 
     live = get_live_data(exchange_name, symbol)
-    price = live.get("price") or float(df.iloc[-1]["close"])
+    price = live.get("price") or 0.0
+    if not price:
+        return "Harga live tidak tersedia."
     now = datetime.now()
 
     sim["last_signal"] = signal
@@ -1146,8 +1394,7 @@ def simulate_live_step(exchange_name: str, symbol: str, timeframe: str, limit: i
         return f"🛑 Kill switch aktif — trading live dihentikan otomatis (drawdown {drawdown_pct:.2f}%)."
 
     if pos is None and not sim["kill_switch_triggered"] and signal.direction in ("BUY", "SELL"):
-        atr = float(df.iloc[-1].get("atr_14", np.nan))
-        atr = atr if (atr and not np.isnan(atr) and atr > 0) else price * 0.01
+        atr = sim.get("_last_atr") or price * 0.01
         direction = "LONG" if signal.direction == "BUY" else "SHORT"
         if direction == "LONG":
             sl = price - 1.5 * atr
@@ -1220,10 +1467,6 @@ def emergency_close_live_position(exchange_name: str, symbol: str) -> str:
 # =============================================================================
 # COIN SCANNER — REKOMENDASI MULTI-COIN (BUY / SELL / HOLD)
 # =============================================================================
-# Update: scanner sekarang memakai signal engine YANG SAMA dengan tab Analisa,
-# termasuk konfirmasi MTF (kalau diaktifkan di sidebar) dan funding rate
-# (bias positioning pasar futures) supaya hasil scan lebih konsisten dengan
-# kondisi bursa/tren pasar saat itu, bukan cuma snapshot 1 timeframe.
 
 @dataclass
 class ScanResult:
@@ -1299,6 +1542,25 @@ def scan_multiple_symbols(exchange_name: str, symbols: Tuple[str, ...], timefram
                 "mtf_status": s.mtf_status, "funding_rate": r.funding_rate,
             })
     return rows
+
+def _render_quick_jump_buttons(rows: List[Dict[str, Any]], key_prefix: str, max_buttons: int = 30) -> None:
+    """FITUR BARU: tombol cepat per-coin di hasil scan — klik untuk langsung
+    membuka coin tsb di tab 'Grafik & Analisa Sinyal' (satu jalur, tanpa perlu
+    cari manual lagi di sidebar)."""
+    if not rows:
+        return
+    rows = rows[:max_buttons]
+    st.caption("👉 Klik salah satu coin di bawah untuk langsung membuka **Grafik & Analisa Sinyal**-nya:")
+    n_cols = 6
+    cols = st.columns(n_cols)
+    for i, r in enumerate(rows):
+        label = f"📊 {r['symbol']}"
+        if cols[i % n_cols].button(label, key=f"jump_{key_prefix}_{r['symbol']}", use_container_width=True):
+            st.session_state.selected_symbol = r["symbol"]
+            st.session_state.active_section = "chart"
+            st.rerun()
+    if len(rows) >= max_buttons:
+        st.caption(f"(Menampilkan {max_buttons} tombol teratas saja, sisanya tetap ada di tabel di atas.)")
 
 def render_coin_scanner_ui(exchange_name: str, timeframe_default: str, mtf_enabled: bool) -> None:
     st.markdown("### 📡 Coin Scanner — Rekomendasi Multi-Coin")
@@ -1456,6 +1718,7 @@ def render_coin_scanner_ui(exchange_name: str, timeframe_default: str, mtf_enabl
     )
     if not pump_df.empty:
         st.dataframe(_style_table(pump_df, show_pump=True), use_container_width=True, hide_index=True)
+        _render_quick_jump_buttons(pump_df.to_dict("records"), key_prefix="pump")
         with st.expander("📋 Detail alasan Pump Score per coin", expanded=False):
             pump_rows_full = [r for r in rows if r.get("pump_score", 0) >= 4.0]
             pump_rows_full.sort(key=lambda r: r.get("pump_score", 0), reverse=True)
@@ -1470,12 +1733,14 @@ def render_coin_scanner_ui(exchange_name: str, timeframe_default: str, mtf_enabl
     st.markdown(f"#### 🟢 Rekomendasi BUY ({len(buy_df)})")
     if not buy_df.empty:
         st.dataframe(_style_table(buy_df), use_container_width=True, hide_index=True)
+        _render_quick_jump_buttons(buy_df.to_dict("records"), key_prefix="buy")
     else:
         st.caption("Tidak ada coin dengan sinyal BUY aktif (score ≥ 3.0" + (", dan selaras MTF" if mtf_enabled else "") + ") saat ini.")
 
     st.markdown(f"#### 🔴 Rekomendasi SELL ({len(sell_df)})")
     if not sell_df.empty:
         st.dataframe(_style_table(sell_df), use_container_width=True, hide_index=True)
+        _render_quick_jump_buttons(sell_df.to_dict("records"), key_prefix="sell")
     else:
         st.caption("Tidak ada coin dengan sinyal SELL aktif (score ≤ -3.0" + (", dan selaras MTF" if mtf_enabled else "") + ") saat ini.")
 
@@ -1487,6 +1752,7 @@ def render_coin_scanner_ui(exchange_name: str, timeframe_default: str, mtf_enabl
                 "REFERENSI arah condong (bias) sesaat, BUKAN sinyal aktif — jangan dipakai untuk entry."
             )
             st.dataframe(_style_table(hold_df), use_container_width=True, hide_index=True)
+            _render_quick_jump_buttons(hold_df.to_dict("records"), key_prefix="hold")
         else:
             st.caption("Semua coin di daftar sudah punya arah (BUY/SELL).")
 
@@ -1643,18 +1909,10 @@ def render_live_price_ui(exchange_name: str, symbol: str) -> None:
     st.caption(f"🔄 Update terakhir: {datetime.now().strftime('%H:%M:%S')} (auto-refresh tiap beberapa detik)")
 
 
-# Kompatibilitas: st.fragment stabil sejak Streamlit ~1.37, sebelumnya bernama
-# st.experimental_fragment (>=1.33). Fallback ke rerender biasa kalau tidak ada.
 _fragment_decorator = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
 
 
 def render_live_price_fragment(exchange_name: str, symbol: str, refresh_sec: int = 5) -> None:
-    """FIX UTAMA (harga live 'diam'/tidak bergerak): sebelumnya render_live_price_ui()
-    dipanggil langsung di badan main(), yang HANYA dieksekusi ulang saat ada
-    interaksi widget / st.rerun() penuh. Karena tidak ada interaksi, angka harga
-    kelihatan 'freeze' walau cache-nya (ttl=10s) sebenarnya sudah kedaluwarsa.
-    Sekarang dibungkus st.fragment(run_every=...) — sama seperti Live Simulator —
-    supaya bagian ini reruns SENDIRI tiap beberapa detik tanpa reload halaman."""
     if _fragment_decorator is None:
         render_live_price_ui(exchange_name, symbol)
         st.info("ℹ️ Update Streamlit ke versi >=1.37 agar harga live auto-refresh tanpa reload halaman.")
@@ -1669,9 +1927,6 @@ def render_live_price_fragment(exchange_name: str, symbol: str, refresh_sec: int
 
 def render_analysis_fragment(exchange_name: str, symbol: str, timeframe: str, limit: int,
                               mtf_enabled: bool, refresh_sec: int, auto_refresh: bool) -> None:
-    """Bungkus grafik + signal engine dalam fragment yang auto-refresh (opsional,
-    default ON tiap 15-20 detik) supaya analisa & candle mengikuti harga terbaru
-    tanpa user harus reload / klik apapun — sinkron dengan harga live di atas."""
     def _body():
         _render_analysis_body(exchange_name, symbol, timeframe, limit, mtf_enabled)
 
@@ -1812,7 +2067,7 @@ def render_live_simulator_ui(exchange_name: str, symbol: str, timeframe: str, mt
     with col2:
         risk_per_trade = st.slider("Risk per Trade (%)", 0.5, 5.0, 2.0, 0.5, key="sim_risk_input") / 100
     with col3:
-        refresh_sec = st.selectbox("Refresh Interval", [2, 3, 5, 10, 15], index=1, key="sim_refresh_sec",
+        refresh_sec = st.selectbox("Refresh Interval (tick harga/posisi)", [1, 2, 3, 5, 10], index=1, key="sim_refresh_sec",
                                     format_func=lambda s: f"{s}s")
     with col4:
         st.write("")
@@ -1820,6 +2075,17 @@ def render_live_simulator_ui(exchange_name: str, symbol: str, timeframe: str, mt
         reset_btn = st.button("♻️ Reset Sesi", use_container_width=True)
 
     sim = get_sim_state(exchange_name, symbol, timeframe, initial_capital, risk_per_trade)
+
+    with st.expander("⚙️ Pengaturan Refresh Lanjutan (smoothness)", expanded=False):
+        st.caption(
+            "Harga & PnL posisi terbuka di-update **setiap tick** (interval di atas) — ringan karena hanya "
+            "mengambil harga ticker. Perhitungan ulang indikator + sinyal (lebih berat: EMA/RSI/MACD/dst) "
+            "cukup dilakukan setiap beberapa tick saja supaya tampilan tetap mulus tanpa membebani server."
+        )
+        sim["signal_recalc_every"] = st.slider(
+            "Hitung ulang sinyal tiap N tick", 1, 10, sim.get("signal_recalc_every", DEFAULT_SIGNAL_RECALC_EVERY), 1,
+            key="sim_signal_recalc_every"
+        )
 
     if reset_btn:
         reset_sim_state(exchange_name, symbol, timeframe, initial_capital, risk_per_trade)
@@ -1867,6 +2133,7 @@ def render_live_simulator_ui(exchange_name: str, symbol: str, timeframe: str, mt
                  f"Trading live dihentikan otomatis. Tekan **Reset Sesi** untuk memulai ulang setelah evaluasi.")
 
     _render_live_simulator_fragment(exchange_name, symbol, timeframe, refresh_sec, mtf_enabled)
+    render_persistent_trade_history_ui(symbol)
 
 
 def _render_live_trading_setup(exchange_name: str, symbol: str, sim: Dict[str, Any]) -> None:
@@ -1956,13 +2223,6 @@ def _render_live_simulator_fragment(exchange_name: str, symbol: str, timeframe: 
 
     _fragment_body()
 
-# --------------------------------------------------------------------------
-# COMPAT HELPER — cek dukungan parameter `key` di berbagai elemen Streamlit.
-# Beberapa versi Streamlit (terutama yang lebih lama) belum mendukung
-# parameter `key` di st.line_chart / st.area_chart / st.bar_chart / dsb.
-# Daripada patch satu-satu tiap ketemu TypeError baru, dicek sekali di awal
-# lalu dipakai di semua tempat yang butuh redraw paksa via key dinamis.
-# --------------------------------------------------------------------------
 import inspect as _inspect
 
 def _supports_key_param(func: Any) -> bool:
@@ -1975,19 +2235,6 @@ _LINE_CHART_SUPPORTS_KEY: bool = _supports_key_param(st.line_chart)
 
 
 def _line_chart_compat(data: Any, *, key: Optional[str] = None, **kwargs: Any) -> None:
-    """Wrapper aman untuk st.line_chart yang tetap jalan di versi Streamlit
-    lama (belum ada parameter `key`) maupun baru (sudah ada `key`).
-
-    FIX: sebelumnya st.line_chart(..., key=...) dipanggil langsung, yang
-    menyebabkan `TypeError: VegaChartsMixin.line_chart() got an unexpected
-    keyword argument 'key'` di versi Streamlit yang belum mendukung
-    parameter tsb. Sekarang dicek dulu via _LINE_CHART_SUPPORTS_KEY (hasil
-    inspect.signature, dihitung sekali saat modul di-import) — kalau versi
-    yang terpasang mendukung, key diteruskan supaya chart tetap dipaksa
-    redraw penuh saat berada di dalam st.fragment(run_every=...) (chart
-    tidak "nyangkut" menampilkan data lama persis saat sebuah posisi baru
-    ditutup). Kalau tidak didukung, key otomatis di-drop dan chart tetap
-    tampil normal (hanya kehilangan jaminan force-redraw itu, bukan error)."""
     if key is not None and _LINE_CHART_SUPPORTS_KEY:
         st.line_chart(data, key=key, **kwargs)
     else:
@@ -1999,7 +2246,9 @@ def _live_sim_body(exchange_name: str, symbol: str, timeframe: str, mtf_enabled:
     if sim is None:
         return
 
-    status_msg = simulate_live_step(exchange_name, symbol, timeframe, mtf_enabled=mtf_enabled) if sim["running"] else None
+    # FITUR BARU: fast_tick=True -> harga & posisi diperbarui tiap tick (murah),
+    # indikator/sinyal berat hanya dihitung ulang tiap N tick (lihat simulate_live_step).
+    status_msg = simulate_live_step(exchange_name, symbol, timeframe, mtf_enabled=mtf_enabled, fast_tick=True) if sim["running"] else None
     sim = st.session_state.get(SIM_STATE_KEY)
 
     if status_msg:
@@ -2009,9 +2258,6 @@ def _live_sim_body(exchange_name: str, symbol: str, timeframe: str, mtf_enabled:
     unrealized_usdt = sim["position"]["unrealized_pnl_usdt"] if sim["position"] else 0.0
     mtm_equity = sim["capital"] + unrealized_usdt
     total_return = safe_pct_change(mtm_equity, sim["initial_capital"])
-    # FIX: pakai .get("profit_pct") bukan t["profit_pct"] — kalau ada trade lama di
-    # session_state yang formatnya beda (mis. dari versi sebelumnya) ini tidak error,
-    # cuma dianggap bukan win, jadi Win Rate tetap kehitung dan tidak silently blank.
     trades_snapshot = list(sim["trades"])
     wins = sum(1 for t in trades_snapshot if (t.get("profit_pct") or 0) > 0)
     total_trades = len(trades_snapshot)
@@ -2046,33 +2292,15 @@ def _live_sim_body(exchange_name: str, symbol: str, timeframe: str, mtf_enabled:
     if sim["equity_curve"] and len(sim["equity_curve"]) > 1:
         st.markdown("#### Equity Curve (Live)")
         eq_df = pd.DataFrame(sim["equity_curve"]).set_index("time")
-        # FIX UTAMA (TypeError: line_chart() got an unexpected keyword argument 'key'):
-        # sebelumnya st.line_chart(..., key=...) dipanggil langsung dan meledak di
-        # versi Streamlit yang belum mendukung parameter `key` pada elemen chart.
-        # Sekarang lewat _line_chart_compat() yang otomatis mendeteksi dukungan
-        # parameter tsb (lihat komentar di definisinya) — key tetap dipakai kalau
-        # didukung (supaya chart tidak "nyangkut" data lama di dalam fragment
-        # auto-refresh), dan otomatis di-skip kalau tidak didukung (tanpa error).
         _line_chart_compat(eq_df["equity"], key=f"equity_chart_{len(sim['equity_curve'])}")
 
-    # FIX UTAMA (Win Rate & Riwayat Trade "tidak muncul" saat trade baru selesai):
-    # sebelumnya label expander memuat total_trades langsung
-    # (f"Riwayat Trade ({total_trades})"). Karena Streamlit memakai label sebagai
-    # identitas widget saat tidak ada `key` eksplisit, begitu total_trades berubah
-    # (trade baru saja close), Streamlit menganggap ini elemen BARU dan
-    # mem-passing expanded=False dari awal lagi — di dalam fragment auto-refresh
-    # ini membuat expander & tabel di dalamnya sempat tidak tampil/reset tepat di
-    # tick yang sama saat posisi ditutup. Sekarang key dibuat stabil (tidak
-    # bergantung pada total_trades) supaya identitas widget konsisten, dan
-    # jumlah trade cukup ditampilkan lewat st.caption di dalamnya.
     try:
-        trade_history_expander = st.expander("📜 Riwayat Trade", expanded=False, key="riwayat_trade_expander")
+        trade_history_expander = st.expander("📜 Riwayat Trade (Sesi Ini)", expanded=False, key="riwayat_trade_expander")
     except TypeError:
-        # Streamlit versi lama belum punya parameter `key` di st.expander
-        trade_history_expander = st.expander("📜 Riwayat Trade", expanded=False)
+        trade_history_expander = st.expander("📜 Riwayat Trade (Sesi Ini)", expanded=False)
 
     with trade_history_expander:
-        st.caption(f"Total trade selesai: **{total_trades}**")
+        st.caption(f"Total trade selesai (sesi ini): **{total_trades}**")
         if trades_snapshot:
             trades_df = pd.DataFrame(trades_snapshot)
             keep_cols = ['entry_time', 'direction', 'entry_price', 'exit_price', 'profit_pct', 'pnl_usdt', 'exit_reason']
@@ -2085,12 +2313,10 @@ def _live_sim_body(exchange_name: str, symbol: str, timeframe: str, mtf_enabled:
             display_df['profit_pct'] = display_df['profit_pct'].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
             if 'pnl_usdt' in display_df.columns:
                 display_df['pnl_usdt'] = display_df['pnl_usdt'].apply(lambda x: f"{x:+.2f}" if pd.notna(x) else "-")
-            # key dinamis (jumlah trade) supaya tabel dipaksa redraw penuh begitu
-            # ada trade baru, bukan memakai cache render sebelumnya.
             st.dataframe(display_df.iloc[::-1], use_container_width=True, height=280,
                          key=f"trades_table_{total_trades}")
         else:
-            st.info("Belum ada trade yang selesai.")
+            st.info("Belum ada trade yang selesai di sesi ini.")
 
     if is_live and sim.get("log"):
         with st.expander("📜 Log Eksekusi", expanded=False):
@@ -2100,6 +2326,50 @@ def _live_sim_body(exchange_name: str, symbol: str, timeframe: str, mtf_enabled:
     if not sim["running"] and sim["tick_count"] == 0:
         hint = "Arm dulu di panel Koneksi Exchange, lalu tekan **Start**." if is_live else "Tekan **Start** untuk mulai memantau sinyal secara real-time."
         st.caption(hint)
+
+
+def render_persistent_trade_history_ui(symbol: str) -> None:
+    """FITUR BARU: riwayat trade PERMANEN dari disk — tetap ada walau tab/
+    browser ditutup, halaman di-refresh, atau kamu buka lagi besok. Terpisah
+    dari 'Riwayat Trade (Sesi Ini)' di atas yang cuma hidup selama sesi
+    browser berjalan."""
+    st.markdown("---")
+    st.markdown("### 💾 Riwayat Trade Permanen (Tersimpan di Disk)")
+    st.caption(
+        "Setiap kali posisi ditutup (SL/TP/reverse/manual/emergency), trade langsung disimpan ke file di "
+        "server — jadi tetap ada meski browser/tab kamu tutup atau halaman ini di-refresh. Kalau server "
+        "kamu redeploy total (mis. beberapa layanan cloud gratis mereset disk saat deploy baru), gunakan "
+        "tombol Export CSV di bawah sebagai cadangan sebelum itu terjadi."
+    )
+
+    history = load_trade_history_from_disk()
+    hc1, hc2, hc3 = st.columns([1, 1, 2])
+    with hc1:
+        st.metric("Total Trade Tersimpan", len(history))
+    with hc2:
+        only_this_symbol = st.checkbox(f"Hanya {symbol}", value=False, key="history_filter_symbol")
+    with hc3:
+        st.write("")
+
+    filtered = history
+    if only_this_symbol:
+        filtered = [h for h in history if h.get("symbol_context") == symbol]
+
+    df_hist = trade_history_dataframe(filtered)
+    if df_hist.empty:
+        st.info("Belum ada riwayat trade permanen tersimpan.")
+        return
+
+    display_df = df_hist.copy()
+    display_df = display_df.sort_values("exit_time", ascending=False)
+    st.dataframe(display_df, use_container_width=True, height=320, hide_index=True)
+
+    csv_bytes = display_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Export Riwayat Trade (CSV)", data=csv_bytes,
+        file_name=f"airise_trade_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv", use_container_width=True
+    )
 
 
 def render_telegram_ui() -> None:
@@ -2140,11 +2410,6 @@ def inject_transformer_theme() -> None:
 html {{
     scroll-behavior: smooth;
 }}
-/* ------------------------------------------------------------------ */
-/* SCROLL SMOOTH DI HP: momentum-scroll iOS + smooth-scroll utk semua  */
-/* container yang bisa discroll (halaman utama, sidebar, dataframe,    */
-/* text area, dsb). GPU-accelerated supaya tidak patah-patah di mobile.*/
-/* ------------------------------------------------------------------ */
 .stApp, .main, section[data-testid="stSidebar"],
 div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
 .block-container {{
@@ -2183,7 +2448,6 @@ div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
 .airise-tagline {{
     font-size: 12px; color: #8aa0b5; margin: 0; letter-spacing: 0.5px;
 }}
-/* --- Toggle sidebar (tombol Menu kustom, tampil jelas di mobile) --- */
 .airise-menu-btn button {{
     background: linear-gradient(90deg, #2979ff, #00e5ff) !important;
     color: #08131c !important;
@@ -2191,7 +2455,6 @@ div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
     border: none !important;
     border-radius: 8px !important;
 }}
-/* --- Metric cards: angka diperkecil & dirapikan dalam grid/kolom --- */
 div[data-testid="stMetric"] {{
     font-size: 12px;
     background: rgba(255,255,255,0.025);
@@ -2227,14 +2490,16 @@ section[data-testid="stSidebar"] {{
     background: linear-gradient(180deg, #131a22 0%, #0d1218 100%);
     border-right: 1px solid rgba(0,229,255,0.15);
 }}
+.airise-nav-active button {{
+    background: linear-gradient(90deg, #2979ff, #00e5ff) !important;
+    color: #08131c !important;
+    font-weight: 800 !important;
+}}
 </style>
 """
     st.markdown(css, unsafe_allow_html=True)
 
 def render_sidebar_toggle_button() -> None:
-    """Tombol eksplisit untuk buka/tutup sidebar — memudahkan di HP karena
-    panah collapse bawaan Streamlit kadang kecil/susah ditekan di layar sentuh.
-    Status disimpan di session_state dan sidebar disembunyikan lewat CSS."""
     if "sidebar_open" not in st.session_state:
         st.session_state.sidebar_open = True
 
@@ -2258,10 +2523,16 @@ def render_header() -> None:
     header_html = (
         f'<div class="airise-header">{logo_img}'
         f'<div><p class="airise-title">{BOT_NAME}</p>'
-        f'<p class="airise-tagline">{BOT_TAGLINE} · 7 Indikator + MTF nyata + Backtesting + Live Price + Coin Scanner</p>'
+        f'<p class="airise-tagline">{BOT_TAGLINE} · 7 Indikator + MTF nyata + Market Cap/Trending + Live Price + Coin Scanner</p>'
         f'</div></div>'
     )
     st.markdown(header_html, unsafe_allow_html=True)
+    if not logo_file_found():
+        st.caption(
+            "ℹ️ File logo `assets/airise_logo.png` belum ditemukan di server — memakai ikon robot vektor "
+            "bawaan sebagai gantinya. Untuk memakai logo PNG kamu sendiri, upload file ke salah satu folder: "
+            + ", ".join(f"`{p}`" for p in LOGO_CANDIDATE_PATHS)
+        )
 
 # =============================================================================
 # LOGIN GATE
@@ -2395,6 +2666,40 @@ def render_logout_button() -> None:
         st.rerun()
 
 # =============================================================================
+# NAVIGASI UTAMA (pengganti st.tabs)
+# =============================================================================
+# FIX: st.tabs bawaan Streamlit TIDAK bisa di-switch programatically dari
+# kode (mis. saat klik tombol "buka di Analisa" pada Coin Scanner). Makanya
+# navigasi diganti dengan tombol biasa yang disinkronkan lewat
+# st.session_state['active_section'] — sehingga Coin Scanner & Market Cap
+# bisa "melompat" ke tab Grafik & Analisa secara otomatis (poin #4).
+
+SECTION_LABELS: Dict[str, str] = {
+    "chart": "📊 Grafik & Analisa Sinyal",
+    "sim": "🤖 Live Simulator",
+    "scanner": "📡 Coin Scanner",
+    "market": "📈 Market Cap & Trending",
+}
+
+def render_main_navigation() -> str:
+    if "active_section" not in st.session_state:
+        st.session_state.active_section = "chart"
+
+    keys = list(SECTION_LABELS.keys())
+    cols = st.columns(len(keys))
+    for i, key in enumerate(keys):
+        is_active = st.session_state.active_section == key
+        wrapper_class = "airise-nav-active" if is_active else ""
+        with cols[i]:
+            st.markdown(f'<div class="{wrapper_class}">', unsafe_allow_html=True)
+            if st.button(SECTION_LABELS[key], key=f"nav_btn_{key}", use_container_width=True):
+                st.session_state.active_section = key
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    return st.session_state.active_section
+
+# =============================================================================
 # MAIN APP
 # =============================================================================
 
@@ -2449,7 +2754,7 @@ def main() -> None:
 
         st.divider()
         st.markdown("### 🔄 Auto-Refresh")
-        live_price_refresh = st.selectbox("Interval Harga Live", [3, 5, 10], index=1,
+        live_price_refresh = st.selectbox("Interval Harga Live", [2, 3, 5, 10], index=1,
                                            format_func=lambda s: f"{s}s", key="live_price_refresh_sec")
         auto_refresh_chart = st.checkbox("Auto-refresh Grafik & Sinyal", value=True, key="auto_refresh_chart")
         chart_refresh_sec = st.selectbox("Interval Grafik", [10, 15, 20, 30, 60], index=1,
@@ -2508,8 +2813,8 @@ def main() -> None:
                     st.rerun()
 
         st.divider()
-        st.caption("💡 Harga live, Grafik/Sinyal, dan Live Simulator sekarang auto-refresh sendiri "
-                   "(masing-masing pakai st.fragment) — tidak perlu reload halaman penuh lagi.")
+        st.caption("💡 Harga live, Grafik/Sinyal, dan Live Simulator auto-refresh sendiri (st.fragment). "
+                   "Klik coin di Coin Scanner / Market Cap untuk langsung lompat ke Grafik & Analisa.")
 
     symbol = st.session_state.selected_symbol
     exchange_name = st.session_state.exchange_name
@@ -2517,25 +2822,23 @@ def main() -> None:
 
     init_telegram_if_enabled()
 
-    # --- FIX: harga live sekarang dibungkus fragment auto-refresh sendiri ---
     render_live_price_fragment(exchange_name, symbol, refresh_sec=live_price_refresh)
     st.divider()
 
     st.markdown(f"### 📊 {symbol} · {exchange_name} · {timeframe}")
 
-    tab_chart, tab_sim, tab_scanner = st.tabs(
-        ["📊 Grafik & Analisa Sinyal", "🤖 Live Simulator", "📡 Coin Scanner"]
-    )
+    active_section = render_main_navigation()
+    st.divider()
 
-    with tab_chart:
+    if active_section == "chart":
         render_analysis_fragment(exchange_name, symbol, timeframe, limit, mtf_enabled,
                                   chart_refresh_sec, auto_refresh_chart)
-
-    with tab_sim:
+    elif active_section == "sim":
         render_live_simulator_ui(exchange_name, symbol, timeframe, mtf_enabled)
-
-    with tab_scanner:
+    elif active_section == "scanner":
         render_coin_scanner_ui(exchange_name, timeframe, mtf_enabled)
+    elif active_section == "market":
+        render_market_overview_ui()
 
 if __name__ == "__main__":
     main()

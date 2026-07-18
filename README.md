@@ -35,3 +35,5 @@ This app is ready for Streamlit Cloud:
 - The app uses `ccxt` to fetch Gate.io market data.
 - If the live market data fails, Streamlit will display an error and fallback is limited to cached symbols.
 - Update `app.py` to adjust symbol list, timeframes, or indicator settings.
+## logo
+letakkan file logo PNG kamu di sini dengan nama: airise_logo.png
