@@ -8,6 +8,7 @@ import json
 import os
 import re
 import base64
+import uuid
 import textwrap
 from dataclasses import dataclass, field
 from typing import Dict, Tuple, Optional, List, Any
@@ -27,14 +28,11 @@ import plotly.graph_objects as go
 BOT_NAME: str = "AIRISE BOT"
 BOT_TAGLINE: str = "Crypto Futures Analyzer Pro"
 
-# --- Login (lihat catatan keamanan di bagian render_login_page) ---
 LOGIN_USERNAME: str = "Swijaya07"
 LOGIN_PASSWORD: str = "000000"
 
 EXCHANGES: Dict[str, Dict[str, Any]] = {
     "OKX": {"id": ["okx"], "options": {"defaultType": "swap"}},
-    # Sejak ccxt v4, class Gate.io di-rename dari 'gateio' menjadi 'gate'.
-    # Simpan beberapa kandidat nama supaya cocok di versi ccxt lama maupun baru.
     "Gate.io": {"id": ["gate", "gateio"], "options": {"defaultType": "swap"}}
 }
 
@@ -55,7 +53,6 @@ POPULAR_SYMBOLS: List[str] = [
     "XRP/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT"
 ]
 
-# Daftar coin untuk fitur Coin Scanner (bisa diedit di sidebar Scanner juga).
 SCANNER_DEFAULT_SYMBOLS: List[str] = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
     "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "ADA/USDT", "TON/USDT",
@@ -63,39 +60,25 @@ SCANNER_DEFAULT_SYMBOLS: List[str] = [
     "NEAR/USDT", "APT/USDT", "ARB/USDT", "OP/USDT", "SUI/USDT",
 ]
 
-# --- "Coin Micin" mode: scan coin murah ($0-$5) dalam jumlah besar sekaligus ---
 SCANNER_MAX_SYMBOLS: int = 150
 MICIN_PRICE_MIN: float = 0.0
 MICIN_PRICE_MAX: float = 5.0
 MICIN_DEFAULT_COUNT: int = 100
 
 # =============================================================================
-# PENYIMPANAN PERMANEN (riwayat trade & lokasi file)
+# PENYIMPANAN PERMANEN
 # =============================================================================
-# Disimpan di disk (JSON) supaya riwayat trade TIDAK hilang saat tab/browser
-# ditutup atau halaman di-refresh — beda dengan st.session_state yang hanya
-# hidup selama satu sesi browser. Catatan: kalau di-deploy di layanan yang
-# filesystem-nya efemeral tiap kali redeploy (mis. beberapa PaaS gratis),
-# riwayat tetap akan hilang saat container benar-benar diganti — makanya
-# disediakan juga tombol Export CSV di UI sebagai cadangan.
 _BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 TRADE_HISTORY_DIR: str = os.path.join(_BASE_DIR, "airise_data")
 TRADE_HISTORY_FILE: str = os.path.join(TRADE_HISTORY_DIR, "trade_history.json")
+WALLET_STATE_FILE: str = os.path.join(TRADE_HISTORY_DIR, "wallet_state.json")
 MAX_HISTORY_RECORDS: int = 3000
+DEMO_DEFAULT_BALANCE: float = 10000.0
+MAINTENANCE_MARGIN_RATE: float = 0.005
 
 # =============================================================================
 # LOGO
 # =============================================================================
-# Logo AIRISE dipakai sebagai file gambar (PNG) yang di-embed sebagai base64.
-# FIX: sebelumnya logo tidak muncul kalau file assets/airise_logo.png tidak
-# ketemu PERSIS di folder yang sama dengan script ini, dan fallback-nya cuma
-# emoji polos. Sekarang:
-#  1) Dicoba beberapa lokasi kandidat (folder script, folder script/assets,
-#     current working directory, cwd/assets) supaya tetap ketemu walau
-#     struktur folder deployment sedikit berbeda.
-#  2) Kalau tetap tidak ketemu, fallback bukan cuma emoji tapi SVG "robot"
-#     bertema biru-cyan yang digambar langsung (vector, selalu tampil rapi
-#     di ukuran berapa pun, tidak tergantung file gambar eksternal sama sekali).
 LOGO_FILENAME: str = "airise_logo.png"
 LOGO_CANDIDATE_PATHS: List[str] = [
     os.path.join(_BASE_DIR, "assets", LOGO_FILENAME),
@@ -134,9 +117,6 @@ def _load_logo_base64() -> Optional[str]:
     return None
 
 def render_logo_img(height_px: int = 64, extra_style: str = "") -> str:
-    """Hasilkan tag <img> base64 dari logo AIRISE kalau file-nya ketemu di salah
-    satu LOGO_CANDIDATE_PATHS. Kalau tidak ketemu sama sekali, pakai SVG robot
-    vector bawaan supaya header tetap terlihat bagus tanpa bergantung file luar."""
     b64 = _load_logo_base64()
     if not b64:
         return _FALLBACK_ROBOT_SVG.format(h=height_px, extra=extra_style)
@@ -151,7 +131,6 @@ def logo_file_found() -> bool:
 # =============================================================================
 
 def format_price(price: Optional[float], symbol: str = "") -> str:
-    """Format harga dengan desimal yang sesuai untuk setiap coin"""
     if price is None:
         return "-"
     try:
@@ -226,7 +205,6 @@ def format_volume(volume: Optional[float]) -> str:
         return str(volume)
 
 def safe_pct_change(target: Optional[float], base: Optional[float]) -> float:
-    """Hitung persentase perubahan dengan aman (hindari ZeroDivisionError)."""
     if target is None or base is None or base == 0:
         return 0.0
     try:
@@ -237,7 +215,6 @@ def safe_pct_change(target: Optional[float], base: Optional[float]) -> float:
     return (target / base - 1) * 100
 
 def send_telegram_message(message: str, bot_token: str, chat_id: str) -> bool:
-    """Send message to Telegram"""
     if not bot_token or not chat_id:
         return False
     try:
@@ -253,12 +230,6 @@ def send_telegram_message(message: str, bot_token: str, chat_id: str) -> bool:
 # =============================================================================
 
 def _resolve_ccxt_class(candidate_ids: List[str]) -> Any:
-    """Cari class exchange ccxt dari daftar kandidat nama (id) — dipakai karena
-    beberapa exchange di ccxt pernah berganti nama antar versi library
-    (mis. Gate.io: 'gateio' -> 'gate' sejak ccxt v4). Coba tiap kandidat
-    berurutan, pakai yang pertama ada; kalau tidak ada satupun, lempar error
-    yang jelas menyebutkan semua nama yang sudah dicoba (bukan cuma AttributeError
-    generik dari getattr biasa)."""
     for cid in candidate_ids:
         cls = getattr(ccxt, cid, None)
         if cls is not None:
@@ -285,8 +256,6 @@ def get_symbols(exchange_name: str) -> List[str]:
     ])
 
 def resolve_symbol(target: str, all_symbols: List[str]) -> Optional[str]:
-    """Cocokkan symbol populer (mis. 'BTC/USDT') ke format spesifik exchange
-    (mis. OKX/Gate.io swap sering pakai 'BTC/USDT:USDT')."""
     if target in all_symbols:
         return target
     base = target.split("/")[0]
@@ -324,7 +293,6 @@ def get_live_data(exchange_name: str, symbol: str) -> Dict[str, Any]:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_all_tickers_bulk(exchange_name: str) -> Dict[str, Dict[str, Any]]:
-    """Ambil ticker SEMUA symbol sekaligus dalam 1 request (exchange.fetch_tickers())."""
     exchange = get_exchange(exchange_name)
     try:
         tickers = exchange.fetch_tickers()
@@ -346,8 +314,6 @@ def get_all_tickers_bulk(exchange_name: str) -> Dict[str, Dict[str, Any]]:
 
 @st.cache_data(ttl=120, show_spinner=False)
 def get_funding_rate(exchange_name: str, symbol: str) -> Optional[float]:
-    """Ambil funding rate futures (bias market maker/positioning). Return None kalau
-    exchange/symbol tidak mendukung endpoint ini (fail-safe, jangan sampai bikin error)."""
     try:
         exchange = get_exchange(exchange_name)
         if not exchange.has.get("fetchFundingRate"):
@@ -385,19 +351,14 @@ def find_micin_candidates(exchange_name: str, price_min: float = MICIN_PRICE_MIN
     return [c[0] for c in candidates[:count]]
 
 # =============================================================================
-# MARKET CAP / TRENDING (CoinGecko) — "coin apa yang lagi hype"
+# MARKET CAP / TRENDING (CoinGecko)
 # =============================================================================
-# Fitur ini terpisah dari exchange futures (OKX/Gate.io) di atas — datanya dari
-# CoinGecko public API (tidak butuh API key) supaya bisa lihat ranking market
-# cap global & daftar coin yang sedang paling banyak dicari (trending),
-# terlepas dari coin itu ada di exchange futures kamu atau tidak.
 
 COINGECKO_MARKETS_URL: str = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_TRENDING_URL: str = "https://api.coingecko.com/api/v3/search/trending"
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_market_overview(vs_currency: str = "usd", per_page: int = 100) -> pd.DataFrame:
-    """Ambil ranking market cap terbesar (global, semua exchange) dari CoinGecko."""
     try:
         params = {
             "vs_currency": vs_currency,
@@ -417,8 +378,6 @@ def get_market_overview(vs_currency: str = "usd", per_page: int = 100) -> pd.Dat
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_trending_coins() -> List[Dict[str, Any]]:
-    """Ambil daftar coin yang sedang paling banyak dicari orang di CoinGecko
-    (proxy untuk 'coin yang lagi hype/hive' walau bukan dari volume futures)."""
     try:
         r = requests.get(COINGECKO_TRENDING_URL, timeout=15)
         r.raise_for_status()
@@ -830,7 +789,6 @@ def analyze_single_timeframe(df: pd.DataFrame) -> Signal:
 
 def apply_mtf_confirmation(signal: Signal, exchange_name: str, symbol: str, timeframe: str,
                             limit: int = 250) -> Signal:
-    """Konfirmasi sinyal timeframe utama terhadap timeframe LEBIH BESAR."""
     higher_tfs = MTF_HIGHER.get(timeframe)
     if not higher_tfs:
         return signal
@@ -876,7 +834,6 @@ def apply_mtf_confirmation(signal: Signal, exchange_name: str, symbol: str, time
 
 
 def compute_pump_score(df: pd.DataFrame) -> Tuple[float, List[str]]:
-    """Heuristik momentum jangka pendek (BUKAN prediksi) untuk coin micin."""
     if len(df) < 25:
         return 0.0, []
 
@@ -1076,7 +1033,6 @@ def _serialize_trade(trade: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 def load_trade_history_from_disk() -> List[Dict[str, Any]]:
-    """Baca seluruh riwayat trade yang sudah pernah disimpan ke disk (lintas sesi/browser)."""
     _ensure_history_dir()
     try:
         if not os.path.exists(TRADE_HISTORY_FILE):
@@ -1088,9 +1044,6 @@ def load_trade_history_from_disk() -> List[Dict[str, Any]]:
         return []
 
 def append_trade_to_disk(trade: Dict[str, Any], context: Tuple[str, str, str], mode: str) -> None:
-    """Simpan 1 trade yang baru saja ditutup ke file JSON permanen di disk.
-    Dipanggil setiap kali posisi ditutup (SL/TP/reverse/manual), baik mode
-    SIM maupun LIVE, supaya riwayat tidak hilang meski tab/browser ditutup."""
     _ensure_history_dir()
     try:
         history = load_trade_history_from_disk()
@@ -1116,62 +1069,234 @@ def trade_history_dataframe(history: List[Dict[str, Any]]) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(history)
     keep = ["entry_time", "exit_time", "exchange", "symbol_context", "timeframe", "sim_mode",
-            "direction", "entry_price", "exit_price", "profit_pct", "pnl_usdt", "exit_reason"]
+            "direction", "leverage", "entry_price", "exit_price", "roi_pct", "pnl_usdt", "exit_reason"]
     keep = [c for c in keep if c in df.columns]
     return df[keep]
 
 # =============================================================================
-# LIVE SIMULATOR / LIVE TRADING ENGINE
+# WALLET ENGINE — DEMO (virtual, permanen di disk) & REAL (live via ccxt)
 # =============================================================================
+# Prinsip desain:
+#  - "Sumber kebenaran" (source of truth) BUKAN st.session_state, melainkan file
+#    JSON di disk (WALLET_STATE_FILE). Artinya posisi & saldo TIDAK bergantung
+#    pada sesi browser — kalau tab/browser ditutup lalu dibuka lagi (bahkan di
+#    device lain), posisi & saldo yang sama tetap terbaca dari disk.
+#  - Wallet Demo = cross margin virtual: SATU saldo dipakai bersama untuk semua
+#    posisi/coin, saldo bisa diedit manual kapan saja (top up / koreksi) tanpa
+#    perlu tombol reset. Saldo bertambah/berkurang otomatis setiap kali posisi
+#    demo ditutup (profit/loss direalisasikan ke saldo).
+#  - Wallet Real = eksekusi order sungguhan ke exchange (via ccxt) memakai API
+#    key. Kredensial API TIDAK disimpan ke disk (alasan keamanan) — hanya hidup
+#    selama sesi browser. Posisi real sendiri tetap dicatat ke disk supaya kamu
+#    tetap bisa melihat riwayat/estimasi walau sesi terputus, tapi PENGECEKAN
+#    SL/TP otomatis saat app offline untuk wallet real bergantung pada apakah
+#    native stop-order berhasil dipasang di exchange (lihat try_place_native_protection).
+#  - "Reconcile": setiap kali halaman Wallet Trading dibuka/refresh, sistem
+#    mengambil candle historis sejak posisi terakhir dicek dan mengecek apakah
+#    SL/TP/Liquidation sempat tersentuh selama itu (termasuk saat offline),
+#    lalu menutup posisi secara otomatis dengan harga yang sesuai. Ini membuat
+#    Entry/SL/TP selalu singkron dengan apa yang "seharusnya" terjadi di pasar,
+#    bukan cuma dicek waktu app sedang terbuka saja.
 
-SIM_STATE_KEY: str = "live_sim"
 LIVE_CREDS_KEY: str = "live_creds"
-CONFIRM_PHRASE: str = "SAYA PAHAM RISIKONYA"
-DEFAULT_SIGNAL_RECALC_EVERY: int = 3  # sinyal & indikator dihitung ulang tiap N tick, harga tetap tiap tick
 
-def _empty_sim_state(initial_capital: float, risk_per_trade: float, context: Tuple[str, str, str]) -> Dict[str, Any]:
-    now = datetime.now()
+def _default_wallet_state() -> Dict[str, Any]:
+    now = datetime.now().isoformat()
     return {
-        "context": context,
-        "mode": "SIM",
-        "running": False,
-        "armed": False,
-        "initial_capital": initial_capital,
-        "capital": initial_capital,
-        "risk_per_trade": risk_per_trade,
-        "max_position_usdt": 100.0,
-        "leverage": 5,
-        "daily_loss_limit_pct": 5.0,
-        "session_start_balance": initial_capital,
-        "kill_switch_triggered": False,
-        "position": None,
-        "trades": [],
-        "equity_curve": [{"time": now, "equity": initial_capital}],
-        "last_signal": None,
-        "cached_signal": None,
-        "ticks_since_signal": 0,
-        "signal_recalc_every": DEFAULT_SIGNAL_RECALC_EVERY,
-        "last_update": None,
-        "tick_count": 0,
-        "log": [],
+        "demo": {"balance": DEMO_DEFAULT_BALANCE, "positions": [], "last_checked": now},
+        "real": {"positions": [], "last_checked": now},
     }
 
-def get_sim_state(exchange_name: str, symbol: str, timeframe: str,
-                   initial_capital: float, risk_per_trade: float) -> Dict[str, Any]:
-    context = (exchange_name, symbol, timeframe)
-    sim = st.session_state.get(SIM_STATE_KEY)
-    if sim is None or sim["context"] != context:
-        sim = _empty_sim_state(initial_capital, risk_per_trade, context)
-        st.session_state[SIM_STATE_KEY] = sim
-    return sim
+def load_wallet_state() -> Dict[str, Any]:
+    _ensure_history_dir()
+    try:
+        if not os.path.exists(WALLET_STATE_FILE):
+            state = _default_wallet_state()
+            save_wallet_state(state)
+            return state
+        with open(WALLET_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        default = _default_wallet_state()
+        for k in default:
+            if k not in data:
+                data[k] = default[k]
+        data["demo"].setdefault("positions", [])
+        data["real"].setdefault("positions", [])
+        data["demo"].setdefault("balance", DEMO_DEFAULT_BALANCE)
+        return data
+    except Exception:
+        return _default_wallet_state()
 
-def reset_sim_state(exchange_name: str, symbol: str, timeframe: str,
-                     initial_capital: float, risk_per_trade: float) -> None:
-    st.session_state[SIM_STATE_KEY] = _empty_sim_state(initial_capital, risk_per_trade, (exchange_name, symbol, timeframe))
+def save_wallet_state(state: Dict[str, Any]) -> None:
+    _ensure_history_dir()
+    try:
+        with open(WALLET_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
-def _sim_log(sim: Dict[str, Any], msg: str) -> None:
-    sim["log"].insert(0, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-    sim["log"] = sim["log"][:50]
+def adjust_demo_balance(state: Dict[str, Any], new_balance: float) -> None:
+    state["demo"]["balance"] = float(new_balance)
+    save_wallet_state(state)
+
+def _calc_liq_price(direction: str, entry: float, leverage: int, mmr: float = MAINTENANCE_MARGIN_RATE) -> Optional[float]:
+    if not entry or leverage <= 0:
+        return None
+    if direction == "LONG":
+        return entry * (1 - 1.0 / leverage + mmr)
+    else:
+        return entry * (1 + 1.0 / leverage - mmr)
+
+def _position_unrealized(pos: Dict[str, Any], mark_price: float) -> Tuple[float, float]:
+    if not mark_price:
+        return 0.0, 0.0
+    if pos["direction"] == "LONG":
+        pnl = pos["qty"] * (mark_price - pos["entry_price"])
+    else:
+        pnl = pos["qty"] * (pos["entry_price"] - mark_price)
+    margin = pos.get("margin") or 0.0
+    roi_pct = (pnl / margin * 100) if margin else 0.0
+    return pnl, roi_pct
+
+def wallet_used_margin(wallet: Dict[str, Any]) -> float:
+    return sum(p.get("margin", 0.0) for p in wallet.get("positions", []))
+
+def wallet_equity(wallet: Dict[str, Any], mark_prices: Dict[str, float]) -> float:
+    total_unrl = 0.0
+    for p in wallet.get("positions", []):
+        mp = mark_prices.get(p["symbol"])
+        if mp:
+            pnl, _ = _position_unrealized(p, mp)
+            total_unrl += pnl
+    return wallet.get("balance", 0.0) + total_unrl
+
+def open_position(state: Dict[str, Any], mode: str, exchange_name: str, symbol: str, timeframe: str,
+                   direction: str, price: float, leverage: int, margin_usdt: float,
+                   sl: float, tp1: float, tp2: float, source: str = "manual") -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    wallet = state[mode]
+    if mode == "demo":
+        available = wallet["balance"] - wallet_used_margin(wallet)
+        if margin_usdt <= 0:
+            return None, "Margin harus lebih besar dari 0."
+        if margin_usdt > available:
+            return None, f"Margin melebihi saldo tersedia (${available:,.2f})."
+    if not price or price <= 0:
+        return None, "Harga live tidak tersedia."
+
+    qty = (margin_usdt * leverage) / price
+    pos = {
+        "id": str(uuid.uuid4())[:8],
+        "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
+        "direction": direction, "entry_price": float(price), "qty": float(qty),
+        "leverage": int(leverage), "margin": float(margin_usdt), "notional": float(qty) * float(price),
+        "sl": float(sl) if sl else None, "tp1": float(tp1) if tp1 else None, "tp2": float(tp2) if tp2 else None,
+        "liq_price": _calc_liq_price(direction, price, leverage),
+        "entry_time": datetime.now().isoformat(),
+        "last_checked": datetime.now().isoformat(),
+        "source": source, "status": "OPEN",
+    }
+    wallet["positions"].append(pos)
+    save_wallet_state(state)
+    return pos, None
+
+def close_position(state: Dict[str, Any], mode: str, pos_id: str, exit_price: float,
+                    reason: str, client: Any = None) -> Optional[Dict[str, Any]]:
+    wallet = state[mode]
+    pos = next((p for p in wallet["positions"] if p["id"] == pos_id), None)
+    if not pos:
+        return None
+
+    if mode == "real":
+        if client is None:
+            return None
+        fill_price, err = place_live_exit(client, pos["symbol"], pos["direction"], pos["qty"])
+        cancel_all_open_orders(client, pos["symbol"])
+        if err:
+            return None
+        exit_price = fill_price
+
+    pnl, roi_pct = _position_unrealized(pos, exit_price)
+    wallet["balance"] = wallet.get("balance", 0.0) + (pnl if mode == "demo" else 0.0)
+    wallet["positions"] = [p for p in wallet["positions"] if p["id"] != pos_id]
+
+    trade_record = dict(pos)
+    trade_record.update({
+        "exit_time": datetime.now().isoformat(), "exit_price": float(exit_price),
+        "pnl_usdt": pnl, "roi_pct": roi_pct, "exit_reason": reason,
+        "balance_after": wallet.get("balance"),
+    })
+    append_trade_to_disk(trade_record, (pos["exchange"], pos["symbol"], pos["timeframe"]), mode.upper())
+    save_wallet_state(state)
+    return trade_record
+
+def reconcile_wallet_positions(state: Dict[str, Any], mode: str, client: Any = None) -> List[Dict[str, Any]]:
+    """Cek posisi terbuka terhadap candle historis sejak terakhir dicek, supaya
+    SL/TP/Liquidation yang kena SELAGI APP TERTUTUP tetap terdeteksi & posisi
+    otomatis ditutup dengan benar begitu app dibuka lagi."""
+    wallet = state[mode]
+    if not wallet.get("positions"):
+        wallet["last_checked"] = datetime.now().isoformat()
+        save_wallet_state(state)
+        return []
+
+    closed: List[Dict[str, Any]] = []
+    still_open: List[Dict[str, Any]] = []
+
+    for pos in list(wallet["positions"]):
+        exit_price = None
+        exit_reason = None
+        try:
+            since_raw = pos.get("last_checked") or pos.get("entry_time")
+            since_dt = datetime.fromisoformat(since_raw) if since_raw else None
+        except Exception:
+            since_dt = None
+
+        tf = pos.get("timeframe") or "5m"
+        try:
+            df = get_ohlcv(pos["exchange"], pos["symbol"], tf, limit=300)
+        except Exception:
+            df = pd.DataFrame()
+
+        if not df.empty:
+            recent = df[df["date"] > since_dt] if since_dt is not None else df
+            for _, candle in recent.iterrows():
+                hi, lo = float(candle["high"]), float(candle["low"])
+                if pos["direction"] == "LONG":
+                    if pos.get("liq_price") and lo <= pos["liq_price"]:
+                        exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
+                    if pos.get("sl") and lo <= pos["sl"]:
+                        exit_price, exit_reason = pos["sl"], "SL Hit"; break
+                    if pos.get("tp2") and hi >= pos["tp2"]:
+                        exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
+                    if pos.get("tp1") and hi >= pos["tp1"]:
+                        exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
+                else:
+                    if pos.get("liq_price") and hi >= pos["liq_price"]:
+                        exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
+                    if pos.get("sl") and hi >= pos["sl"]:
+                        exit_price, exit_reason = pos["sl"], "SL Hit"; break
+                    if pos.get("tp2") and lo <= pos["tp2"]:
+                        exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
+                    if pos.get("tp1") and lo <= pos["tp1"]:
+                        exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
+
+        if exit_price is not None:
+            if mode == "real" and client is None:
+                pos["_offline_alert"] = f"Harga historis sempat menyentuh {exit_reason} (~{exit_price}). Cek posisi ini langsung di exchange."
+                still_open.append(pos)
+                continue
+            trade = close_position(state, mode, pos["id"], exit_price, exit_reason, client)
+            if trade:
+                closed.append(trade)
+            continue
+
+        pos["last_checked"] = datetime.now().isoformat()
+        pos.pop("_offline_alert", None)
+        still_open.append(pos)
+
+    wallet["positions"] = still_open
+    save_wallet_state(state)
+    return closed
 
 def connect_live_exchange(exchange_name: str, api_key: str, api_secret: str) -> Tuple[Optional[Any], Optional[str]]:
     if not api_key or not api_secret:
@@ -1212,23 +1337,6 @@ def try_set_leverage(client: Any, symbol: str, leverage: int) -> None:
     except Exception:
         pass
 
-def place_live_entry(client: Any, symbol: str, direction: str, usdt_notional: float,
-                      leverage: int) -> Tuple[Optional[float], Optional[float], Optional[str], Optional[str]]:
-    try:
-        ticker = client.fetch_ticker(symbol)
-        price = ticker.get("last") or ticker.get("close")
-        try_set_leverage(client, symbol, leverage)
-        amount = _amount_for_notional(client, symbol, usdt_notional, price)
-        if amount <= 0:
-            return None, None, None, "Ukuran order terlalu kecil (cek Max Position USDT)."
-        side = "buy" if direction == "LONG" else "sell"
-        order = client.create_order(symbol, "market", side, amount)
-        filled_price = order.get("average") or order.get("price") or price
-        filled_amount = order.get("filled") or amount
-        return float(filled_price), float(filled_amount), order.get("id"), None
-    except Exception as e:
-        return None, None, None, str(e)
-
 def place_live_exit(client: Any, symbol: str, direction: str, amount: float) -> Tuple[Optional[float], Optional[str]]:
     try:
         side = "sell" if direction == "LONG" else "buy"
@@ -1241,227 +1349,33 @@ def place_live_exit(client: Any, symbol: str, direction: str, amount: float) -> 
         return None, str(e)
 
 def try_place_native_protection(client: Any, exchange_name: str, symbol: str, direction: str,
-                                 amount: float, sl: float, tp2: float) -> None:
-    return
+                                 amount: float, sl: Optional[float], tp: Optional[float]) -> Optional[str]:
+    """Best-effort: pasang stop-loss/take-profit NATIVE di exchange (bukan di
+    app) supaya posisi REAL tetap terlindungi meski app ditutup. Ini bergantung
+    dukungan unified ccxt exchange yang dipakai — kalau gagal, fungsi ini
+    mengembalikan pesan peringatan (bukan exception) supaya alur order tidak
+    terganggu, tapi user WAJIB diberi tahu agar cek manual di exchange."""
+    close_side = "sell" if direction == "LONG" else "buy"
+    warnings: List[str] = []
+    try:
+        if sl:
+            client.create_order(symbol, "market", close_side, amount,
+                                 params={"reduceOnly": True, "stopLossPrice": sl})
+    except Exception as e:
+        warnings.append(f"SL native gagal dipasang ({e})")
+    try:
+        if tp:
+            client.create_order(symbol, "market", close_side, amount,
+                                 params={"reduceOnly": True, "takeProfitPrice": tp})
+    except Exception as e:
+        warnings.append(f"TP native gagal dipasang ({e})")
+    return " · ".join(warnings) if warnings else None
 
 def cancel_all_open_orders(client: Any, symbol: str) -> None:
     try:
         client.cancel_all_orders(symbol)
     except Exception:
         pass
-
-def _close_trade_and_update_capital(sim: Dict[str, Any], pos: Dict[str, Any], exit_price: float,
-                                     exit_reason: str, now: datetime) -> Dict[str, Any]:
-    if pos["direction"] == "LONG":
-        pnl_usdt = pos["position_size"] * (exit_price - pos["entry_price"])
-    else:
-        pnl_usdt = pos["position_size"] * (pos["entry_price"] - exit_price)
-
-    profit_pct = (safe_pct_change(exit_price, pos["entry_price"]) if pos["direction"] == "LONG"
-                  else safe_pct_change(pos["entry_price"], exit_price))
-
-    sim["capital"] += pnl_usdt
-    trade = dict(pos)
-    trade.update({
-        "exit_time": now, "exit_price": exit_price,
-        "profit_pct": profit_pct, "pnl_usdt": pnl_usdt, "exit_reason": exit_reason,
-        "final_capital": sim["capital"]
-    })
-    sim["trades"].append(trade)
-    sim["position"] = None
-
-    # FITUR BARU: simpan ke disk supaya riwayat trade tetap ada walau tab
-    # ditutup / halaman direfresh / server restart (selama disk yang sama).
-    append_trade_to_disk(trade, sim["context"], sim["mode"])
-
-    return trade
-
-def simulate_live_step(exchange_name: str, symbol: str, timeframe: str, limit: int = 300,
-                        mtf_enabled: bool = True, fast_tick: bool = False) -> Optional[str]:
-    """FITUR BARU (refresh lebih smooth): saat fast_tick=True, harga tetap
-    diambil setiap tick (murah, sudah di-cache ttl 10s oleh get_live_data),
-    tapi indikator + sinyal (OHLCV, EMA/RSI/MACD/dst — lebih berat dihitung)
-    HANYA dihitung ulang tiap `signal_recalc_every` tick, sisanya memakai
-    sinyal yang sudah di-cache di sim['cached_signal']. Posisi terbuka & SL/TP
-    tetap dicek terhadap harga TERBARU tiap tick (tidak menunggu recompute),
-    jadi PnL & status posisi terasa lebih mulus/real-time tanpa membebani CPU."""
-    sim = st.session_state.get(SIM_STATE_KEY)
-    if sim is None or not sim.get("running", False):
-        return None
-
-    if sim["mode"] == "LIVE" and not sim.get("armed", False):
-        sim["running"] = False
-        return "⚠️ Mode LIVE belum di-arm. Simulasi dihentikan."
-
-    need_full_recalc = (
-        not fast_tick
-        or sim.get("cached_signal") is None
-        or sim.get("ticks_since_signal", 0) >= sim.get("signal_recalc_every", DEFAULT_SIGNAL_RECALC_EVERY)
-    )
-
-    if need_full_recalc:
-        df = get_ohlcv(exchange_name, symbol, timeframe, limit)
-        if df.empty or len(df) < 55:
-            return "Data candle belum cukup."
-        df = add_indicators(df)
-        signal = analyze_single_timeframe(df)
-        if mtf_enabled:
-            signal = apply_mtf_confirmation(signal, exchange_name, symbol, timeframe, limit=min(limit, 250))
-        sim["cached_signal"] = signal
-        sim["ticks_since_signal"] = 0
-        last_atr = float(df.iloc[-1].get("atr_14", np.nan))
-        sim["_last_atr"] = last_atr if (last_atr and not np.isnan(last_atr)) else None
-    else:
-        signal = sim["cached_signal"]
-        sim["ticks_since_signal"] = sim.get("ticks_since_signal", 0) + 1
-
-    live = get_live_data(exchange_name, symbol)
-    price = live.get("price") or 0.0
-    if not price:
-        return "Harga live tidak tersedia."
-    now = datetime.now()
-
-    sim["last_signal"] = signal
-    sim["last_update"] = now
-    sim["tick_count"] += 1
-
-    is_live = sim["mode"] == "LIVE"
-    client = None
-    if is_live:
-        creds = st.session_state.get(LIVE_CREDS_KEY, {})
-        client = creds.get("client")
-        if client is None:
-            sim["running"] = False
-            return "❌ Koneksi exchange live tidak ditemukan. Simulasi dihentikan."
-
-    status_msg = None
-    pos = sim["position"]
-
-    if pos is not None:
-        pos["current_price"] = price
-        if pos["direction"] == "LONG":
-            pos["unrealized_pnl"] = safe_pct_change(price, pos["entry_price"])
-            pos["unrealized_pnl_usdt"] = pos["position_size"] * (price - pos["entry_price"])
-        else:
-            pos["unrealized_pnl"] = safe_pct_change(pos["entry_price"], price)
-            pos["unrealized_pnl_usdt"] = pos["position_size"] * (pos["entry_price"] - price)
-
-        exit_reason = None
-        if pos["direction"] == "LONG":
-            if price <= pos["sl"]:
-                exit_reason = "SL Hit"
-            elif price >= pos["tp2"]:
-                exit_reason = "TP2 Hit"
-            elif price >= pos["tp1"]:
-                exit_reason = "TP1 Hit"
-            elif signal.direction == "SELL" and signal.score < -2.5:
-                exit_reason = "Reverse Signal"
-        else:
-            if price >= pos["sl"]:
-                exit_reason = "SL Hit"
-            elif price <= pos["tp2"]:
-                exit_reason = "TP2 Hit"
-            elif price <= pos["tp1"]:
-                exit_reason = "TP1 Hit"
-            elif signal.direction == "BUY" and signal.score > 2.5:
-                exit_reason = "Reverse Signal"
-
-        if exit_reason is not None:
-            if is_live:
-                fill_price, err = place_live_exit(client, symbol, pos["direction"], pos["position_size"])
-                cancel_all_open_orders(client, symbol)
-                if err:
-                    _sim_log(sim, f"❌ Gagal close posisi live: {err}")
-                    status_msg = f"❌ Gagal menutup posisi live: {err}"
-                    exit_reason = None
-                else:
-                    exit_price = fill_price
-            else:
-                exit_price = {"SL Hit": pos["sl"], "TP2 Hit": pos["tp2"], "TP1 Hit": pos["tp1"]}.get(exit_reason, price)
-
-            if exit_reason is not None:
-                trade = _close_trade_and_update_capital(sim, pos, exit_price, exit_reason, now)
-                pos = None
-                status_msg = f"🔔 Posisi {trade['direction']} ditutup ({exit_reason}) {trade['profit_pct']:+.2f}% ({trade['pnl_usdt']:+.2f} USDT)"
-                _sim_log(sim, status_msg)
-
-    drawdown_pct = safe_pct_change(sim["capital"], sim["session_start_balance"])
-    if is_live and pos is None and drawdown_pct <= -abs(sim["daily_loss_limit_pct"]) and not sim["kill_switch_triggered"]:
-        sim["kill_switch_triggered"] = True
-        sim["running"] = False
-        sim["armed"] = False
-        _sim_log(sim, f"🛑 KILL SWITCH aktif: drawdown {drawdown_pct:.2f}% >= limit {sim['daily_loss_limit_pct']}%. Trading live dihentikan.")
-        return f"🛑 Kill switch aktif — trading live dihentikan otomatis (drawdown {drawdown_pct:.2f}%)."
-
-    if pos is None and not sim["kill_switch_triggered"] and signal.direction in ("BUY", "SELL"):
-        atr = sim.get("_last_atr") or price * 0.01
-        direction = "LONG" if signal.direction == "BUY" else "SHORT"
-        if direction == "LONG":
-            sl = price - 1.5 * atr
-            tp1 = price + 1.5 * (price - sl)
-            tp2 = price + 3.0 * (price - sl)
-        else:
-            sl = price + 1.5 * atr
-            tp1 = price - 1.5 * (sl - price)
-            tp2 = price - 3.0 * (sl - price)
-
-        risk_amount = sim["capital"] * sim["risk_per_trade"]
-        risk_dist = abs(price - sl)
-        position_size = risk_amount / risk_dist if risk_dist > 0 else 0
-
-        if is_live:
-            notional = min(sim["max_position_usdt"], sim["capital"] * sim["risk_per_trade"] * sim["leverage"])
-            filled_price, filled_amount, order_id, err = place_live_entry(client, symbol, direction, notional, sim["leverage"])
-            if err:
-                _sim_log(sim, f"❌ Gagal buka posisi live: {err}")
-                status_msg = f"❌ Gagal membuka posisi live: {err}"
-            else:
-                entry_price = filled_price
-                position_size = filled_amount
-                try_place_native_protection(client, exchange_name, symbol, direction, filled_amount, sl, tp2)
-                sim["position"] = {
-                    "entry_time": now, "direction": direction,
-                    "entry_price": entry_price, "sl": sl, "tp1": tp1, "tp2": tp2,
-                    "position_size": position_size, "current_price": entry_price,
-                    "unrealized_pnl": 0.0, "unrealized_pnl_usdt": 0.0, "order_id": order_id
-                }
-                status_msg = f"🚀 [LIVE] Posisi {direction} dibuka @ {format_price(entry_price, symbol)} ({format_number(filled_amount,6)} unit)"
-                _sim_log(sim, status_msg)
-        else:
-            sim["position"] = {
-                "entry_time": now, "direction": direction,
-                "entry_price": price, "sl": sl, "tp1": tp1, "tp2": tp2,
-                "position_size": position_size, "current_price": price,
-                "unrealized_pnl": 0.0, "unrealized_pnl_usdt": 0.0
-            }
-            status_msg = f"🚀 Posisi {direction} dibuka @ {format_price(price, symbol)} (size {position_size:.6f} unit)"
-            _sim_log(sim, status_msg)
-
-    unrealized_usdt = sim["position"]["unrealized_pnl_usdt"] if sim["position"] else 0.0
-    mtm_equity = sim["capital"] + unrealized_usdt
-    sim["equity_curve"].append({"time": now, "equity": mtm_equity})
-    if len(sim["equity_curve"]) > 500:
-        sim["equity_curve"] = sim["equity_curve"][-500:]
-
-    return status_msg
-
-def emergency_close_live_position(exchange_name: str, symbol: str) -> str:
-    sim = st.session_state.get(SIM_STATE_KEY)
-    creds = st.session_state.get(LIVE_CREDS_KEY, {})
-    client = creds.get("client")
-    if sim is None or sim["position"] is None:
-        return "Tidak ada posisi terbuka."
-    if client is None:
-        return "Tidak ada koneksi exchange live."
-    pos = sim["position"]
-    fill_price, err = place_live_exit(client, symbol, pos["direction"], pos["position_size"])
-    cancel_all_open_orders(client, symbol)
-    if err:
-        return f"❌ Gagal emergency close: {err}"
-    trade = _close_trade_and_update_capital(sim, pos, fill_price, "Emergency Stop", datetime.now())
-    sim["running"] = False
-    _sim_log(sim, f"🛑 Emergency close: {trade['profit_pct']:+.2f}% ({trade['pnl_usdt']:+.2f} USDT)")
-    return f"✅ Posisi ditutup manual ({trade['profit_pct']:+.2f}%)."
 
 
 # =============================================================================
@@ -1544,9 +1458,6 @@ def scan_multiple_symbols(exchange_name: str, symbols: Tuple[str, ...], timefram
     return rows
 
 def _render_quick_jump_buttons(rows: List[Dict[str, Any]], key_prefix: str, max_buttons: int = 30) -> None:
-    """FITUR BARU: tombol cepat per-coin di hasil scan — klik untuk langsung
-    membuka coin tsb di tab 'Grafik & Analisa Sinyal' (satu jalur, tanpa perlu
-    cari manual lagi di sidebar)."""
     if not rows:
         return
     rows = rows[:max_buttons]
@@ -2048,301 +1959,244 @@ border-radius:8px; padding:10px 14px; margin-bottom:10px;">
     st.caption(f"🔄 Update terakhir: {datetime.now().strftime('%H:%M:%S')}")
 
 
-def render_live_simulator_ui(exchange_name: str, symbol: str, timeframe: str, mtf_enabled: bool) -> None:
-    st.markdown("### 🤖 Live Simulator / Live Trading Futures")
+# =============================================================================
+# WALLET TRADING UI — Demo (virtual) & Real (live), Long/Short, Cross Margin
+# =============================================================================
 
-    mode_choice = st.radio(
-        "Mode",
-        ["Simulasi (Paper Trading)", "Live Trading (Uang Sungguhan)"],
-        horizontal=True, key="sim_mode_choice"
-    )
-    mode = "LIVE" if mode_choice.startswith("Live") else "SIM"
-
-    col1, col2, col3, col4 = st.columns(4, gap="small")
-    with col1:
-        initial_capital = st.number_input(
-            "Modal Awal (USDT)" if mode == "LIVE" else "Initial Capital",
-            value=10000.0, step=100.0 if mode == "LIVE" else 1000.0, min_value=1.0, key="sim_capital_input"
-        )
-    with col2:
-        risk_per_trade = st.slider("Risk per Trade (%)", 0.5, 5.0, 2.0, 0.5, key="sim_risk_input") / 100
-    with col3:
-        refresh_sec = st.selectbox("Refresh Interval (tick harga/posisi)", [1, 2, 3, 5, 10], index=1, key="sim_refresh_sec",
-                                    format_func=lambda s: f"{s}s")
-    with col4:
-        st.write("")
-        st.write("")
-        reset_btn = st.button("♻️ Reset Sesi", use_container_width=True)
-
-    sim = get_sim_state(exchange_name, symbol, timeframe, initial_capital, risk_per_trade)
-
-    with st.expander("⚙️ Pengaturan Refresh Lanjutan (smoothness)", expanded=False):
+def _render_demo_balance_editor(state: Dict[str, Any]) -> None:
+    with st.expander("✏️ Atur Saldo Demo (manual, tersimpan permanen)", expanded=False):
         st.caption(
-            "Harga & PnL posisi terbuka di-update **setiap tick** (interval di atas) — ringan karena hanya "
-            "mengambil harga ticker. Perhitungan ulang indikator + sinyal (lebih berat: EMA/RSI/MACD/dst) "
-            "cukup dilakukan setiap beberapa tick saja supaya tampilan tetap mulus tanpa membebani server."
+            "Ubah saldo demo kapan saja — misalnya 'top up' virtual atau koreksi saldo. Tidak perlu tombol "
+            "reset — saldo ini tersimpan di server dan otomatis bertambah/berkurang tiap kali posisi demo "
+            "ditutup (profit/loss)."
         )
-        sim["signal_recalc_every"] = st.slider(
-            "Hitung ulang sinyal tiap N tick", 1, 10, sim.get("signal_recalc_every", DEFAULT_SIGNAL_RECALC_EVERY), 1,
-            key="sim_signal_recalc_every"
+        new_bal = st.number_input(
+            "Saldo Demo (USDT)", min_value=0.0, value=float(state["demo"]["balance"]),
+            step=100.0, key="demo_balance_input"
         )
-
-    if reset_btn:
-        reset_sim_state(exchange_name, symbol, timeframe, initial_capital, risk_per_trade)
-        st.session_state.pop(LIVE_CREDS_KEY, None)
-        st.rerun()
-
-    if sim["mode"] != mode:
-        sim["mode"] = mode
-        sim["running"] = False
-        sim["armed"] = False
-
-    if mode == "LIVE":
-        _render_live_trading_setup(exchange_name, symbol, sim)
-    else:
-        st.info("🧪 Mode Simulasi — tidak ada order nyata yang dikirim ke exchange manapun.")
-
-    c1, c2, c3 = st.columns([1, 1, 2], gap="small")
-    with c1:
-        start_disabled = (mode == "LIVE" and not sim.get("armed", False))
-        if not sim["running"]:
-            if st.button("▶️ Start", use_container_width=True, type="primary", disabled=start_disabled):
-                sim["running"] = True
-                sim["kill_switch_triggered"] = False
-                st.rerun()
-        else:
-            if st.button("⏸️ Stop", use_container_width=True):
-                sim["running"] = False
-                st.rerun()
-    with c2:
-        if mode == "LIVE" and sim["position"] is not None:
-            if st.button("🛑 Emergency Close", use_container_width=True):
-                msg = emergency_close_live_position(exchange_name, symbol)
-                st.toast(msg)
-                st.rerun()
-    with c3:
-        if mode == "LIVE":
-            status = "🔴 LIVE TRADING AKTIF" if sim["running"] else ("🟡 ARMED (belum jalan)" if sim["armed"] else "⚪ NOT ARMED")
-        else:
-            status = "🟢 SIMULASI JALAN" if sim["running"] else "⚪ STOPPED"
-        st.markdown(f"**Status:** {status} · `{symbol}` · `{timeframe}` · `{exchange_name}`"
-                    + (" · MTF ✅" if mtf_enabled else ""))
-
-    if mode == "LIVE" and sim.get("kill_switch_triggered"):
-        st.error(f"🛑 Kill switch aktif — drawdown harian sudah mencapai batas ({sim['daily_loss_limit_pct']}%). "
-                 f"Trading live dihentikan otomatis. Tekan **Reset Sesi** untuk memulai ulang setelah evaluasi.")
-
-    _render_live_simulator_fragment(exchange_name, symbol, timeframe, refresh_sec, mtf_enabled)
-    render_persistent_trade_history_ui(symbol)
+        if st.button("💾 Simpan Saldo Demo", key="save_demo_balance_btn"):
+            adjust_demo_balance(state, new_bal)
+            st.success(f"Saldo demo diperbarui menjadi ${format_number(new_bal)}.")
+            st.rerun()
 
 
-def _render_live_trading_setup(exchange_name: str, symbol: str, sim: Dict[str, Any]) -> None:
-    st.error(
-        "⚠️ **MODE LIVE TRADING — UANG SUNGGUHAN.** Bot akan mengirim order MARKET langsung ke akun "
-        f"{exchange_name} kamu berdasarkan sinyal otomatis. Gunakan API key dengan pembatasan IP dan "
-        "**TANPA izin withdraw**. Kerugian bisa terjadi karena bug, slippage, koneksi putus, atau kondisi pasar ekstrem."
-    )
-
+def _render_real_wallet_connection(exchange_name: str) -> Optional[Any]:
     creds = st.session_state.setdefault(LIVE_CREDS_KEY, {"connected": False, "client": None, "balance": None})
-
-    with st.expander("🔐 Koneksi Exchange & Risk Limit", expanded=not creds.get("connected", False)):
-        c1, c2 = st.columns(2, gap="small")
+    with st.expander("🔐 Koneksi Exchange (Wallet Real)", expanded=not creds.get("connected", False)):
+        st.error(
+            "⚠️ **UANG SUNGGUHAN.** Gunakan API key dengan pembatasan IP dan **TANPA izin withdraw**. "
+            "Kredensial API TIDAK disimpan ke disk (hanya hidup selama sesi browser ini) untuk alasan keamanan."
+        )
+        c1, c2 = st.columns(2)
         with c1:
             api_key = st.text_input("API Key", type="password", key="live_api_key")
         with c2:
             api_secret = st.text_input("API Secret", type="password", key="live_api_secret")
-
-        c1, c2, c3 = st.columns(3, gap="small")
-        with c1:
-            sim["leverage"] = int(st.number_input("Leverage", value=int(sim.get("leverage", 5)), min_value=1, max_value=125, step=1))
-        with c2:
-            sim["max_position_usdt"] = float(st.number_input("Max Position per Trade (USDT)",
-                                                               value=float(sim.get("max_position_usdt", 100.0)), min_value=5.0, step=5.0))
-        with c3:
-            sim["daily_loss_limit_pct"] = float(st.number_input("Daily Loss Limit (%)",
-                                                                  value=float(sim.get("daily_loss_limit_pct", 5.0)), min_value=0.5, max_value=50.0, step=0.5))
-
-        if st.button("🔌 Test Connection & Cek Saldo"):
+        if st.button("🔌 Konek & Cek Saldo", key="real_connect_btn"):
             client, err = connect_live_exchange(exchange_name, api_key, api_secret)
             if err:
                 st.error(f"❌ Gagal konek: {err}")
-                creds["connected"] = False
-                creds["client"] = None
+                creds.update({"connected": False, "client": None})
             else:
-                balance, berr = fetch_usdt_balance(client)
+                bal, berr = fetch_usdt_balance(client)
                 if berr:
                     st.error(f"❌ Konek berhasil tapi gagal ambil saldo: {berr}")
-                    creds["connected"] = False
+                    creds.update({"connected": False, "client": None})
                 else:
-                    creds["connected"] = True
-                    creds["client"] = client
-                    creds["balance"] = balance
-                    st.success(f"✅ Terkoneksi. Saldo USDT tersedia: ${format_number(balance)}")
-
+                    creds.update({"connected": True, "client": client, "balance": bal})
+                    st.success(f"✅ Terhubung. Saldo USDT tersedia: ${format_number(bal)}")
         if creds.get("connected"):
-            st.caption(f"Status koneksi: 🟢 Terhubung · Saldo terakhir: ${format_number(creds.get('balance'))}")
-
-        st.markdown("---")
-        confirm_text = st.text_input(
-            f"Ketik **{CONFIRM_PHRASE}** untuk mengaktifkan (arm) eksekusi order nyata:",
-            key="live_confirm_phrase"
-        )
-        arm_ready = creds.get("connected", False) and confirm_text.strip().upper() == CONFIRM_PHRASE
-
-        cc1, cc2 = st.columns(2, gap="small")
-        with cc1:
-            if not sim.get("armed", False):
-                if st.button("🔓 Arm Live Trading", disabled=not arm_ready, use_container_width=True):
-                    sim["armed"] = True
-                    sim["session_start_balance"] = creds.get("balance") or sim["capital"]
-                    sim["capital"] = sim["session_start_balance"]
-                    sim["kill_switch_triggered"] = False
-                    st.rerun()
-            else:
-                if st.button("🔒 Disarm", use_container_width=True):
-                    sim["armed"] = False
-                    sim["running"] = False
-                    st.rerun()
-        with cc2:
-            if not creds.get("connected"):
-                st.caption("Test koneksi dulu sebelum bisa arm.")
-            elif not arm_ready:
-                st.caption("Ketik frasa konfirmasi persis sama untuk mengaktifkan tombol Arm.")
+            st.caption(f"🟢 Terhubung · Saldo terakhir: ${format_number(creds.get('balance'))}")
+            st.caption(
+                "ℹ️ Karena app ini tidak berjalan di background, perlindungan SL/TP untuk posisi REAL saat "
+                "kamu offline bergantung pada order stop native yang dipasang ke exchange saat posisi dibuka. "
+                "Selalu cek juga langsung di exchange kamu untuk memastikan."
+            )
+    return creds.get("client") if creds.get("connected") else None
 
 
-def _render_live_simulator_fragment(exchange_name: str, symbol: str, timeframe: str, refresh_sec: int,
-                                     mtf_enabled: bool) -> None:
-    if _fragment_decorator is None:
-        _live_sim_body(exchange_name, symbol, timeframe, mtf_enabled)
-        st.info("ℹ️ Update Streamlit ke versi terbaru untuk auto-refresh mulus tanpa reload halaman.")
+def _render_order_form(state: Dict[str, Any], mode: str, exchange_name: str, symbol: str,
+                        timeframe: str, client: Any, mark_price: float) -> None:
+    st.markdown("#### 🎯 Buka Posisi Baru")
+    if mode == "real" and client is None:
+        st.warning("Hubungkan API key dulu di panel di atas untuk membuka posisi real.")
+        return
+    if not mark_price:
+        st.warning("Harga live belum tersedia, coba refresh sebentar lagi.")
         return
 
-    @_fragment_decorator(run_every=refresh_sec)
-    def _fragment_body():
-        _live_sim_body(exchange_name, symbol, timeframe, mtf_enabled)
-
-    _fragment_body()
-
-import inspect as _inspect
-
-def _supports_key_param(func: Any) -> bool:
+    wallet = state[mode]
+    default_sl, default_tp1, default_tp2 = mark_price * 0.99, mark_price * 1.015, mark_price * 1.03
     try:
-        return "key" in _inspect.signature(func).parameters
-    except (TypeError, ValueError):
-        return False
+        df = get_ohlcv(exchange_name, symbol, timeframe, 250)
+        if not df.empty and len(df) >= 55:
+            sig = analyze_single_timeframe(add_indicators(df))
+            default_sl, default_tp1, default_tp2 = sig.sl, sig.tp1, sig.tp2
+    except Exception:
+        pass
 
-_LINE_CHART_SUPPORTS_KEY: bool = _supports_key_param(st.line_chart)
-
-
-def _line_chart_compat(data: Any, *, key: Optional[str] = None, **kwargs: Any) -> None:
-    if key is not None and _LINE_CHART_SUPPORTS_KEY:
-        st.line_chart(data, key=key, **kwargs)
-    else:
-        st.line_chart(data, **kwargs)
-
-
-def _live_sim_body(exchange_name: str, symbol: str, timeframe: str, mtf_enabled: bool) -> None:
-    sim = st.session_state.get(SIM_STATE_KEY)
-    if sim is None:
-        return
-
-    # FITUR BARU: fast_tick=True -> harga & posisi diperbarui tiap tick (murah),
-    # indikator/sinyal berat hanya dihitung ulang tiap N tick (lihat simulate_live_step).
-    status_msg = simulate_live_step(exchange_name, symbol, timeframe, mtf_enabled=mtf_enabled, fast_tick=True) if sim["running"] else None
-    sim = st.session_state.get(SIM_STATE_KEY)
-
-    if status_msg:
-        st.toast(status_msg)
-
-    is_live = sim["mode"] == "LIVE"
-    unrealized_usdt = sim["position"]["unrealized_pnl_usdt"] if sim["position"] else 0.0
-    mtm_equity = sim["capital"] + unrealized_usdt
-    total_return = safe_pct_change(mtm_equity, sim["initial_capital"])
-    trades_snapshot = list(sim["trades"])
-    wins = sum(1 for t in trades_snapshot if (t.get("profit_pct") or 0) > 0)
-    total_trades = len(trades_snapshot)
-    win_rate = (wins / total_trades * 100) if total_trades else 0.0
-
-    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
-    c1.metric("Equity (MTM)" if not is_live else "Balance Estimasi (MTM)", f"${format_number(mtm_equity)}", format_percentage(total_return))
-    c2.metric("Total Trades", total_trades)
-    c3.metric("Win Rate", f"{win_rate:.1f}%" if total_trades else "-")
-    c4.metric("Ticks Processed", sim["tick_count"])
-    last_upd = sim["last_update"].strftime("%H:%M:%S") if sim["last_update"] else "-"
-    c5.metric("Last Update", last_upd)
-
-    pos = sim["position"]
-    if pos:
-        st.markdown("---")
-        st.markdown("#### 📌 Posisi Terbuka" + (" (LIVE)" if is_live else ""))
-        pnl_color = "green" if pos["unrealized_pnl"] > 0 else "red" if pos["unrealized_pnl"] < 0 else "white"
-        cols = st.columns(6, gap="small")
-        cols[0].markdown(f"**Arah:** {'🟢' if pos['direction'] == 'LONG' else '🔴'} **{pos['direction']}**")
-        cols[1].markdown(f"**Entry:** ${format_price(pos['entry_price'], symbol)}")
-        cols[2].markdown(f"**Current:** ${format_price(pos['current_price'], symbol)}")
-        cols[3].markdown(f"**SL:** ${format_price(pos['sl'], symbol)}")
-        cols[4].markdown(f"**TP1/TP2:** ${format_price(pos['tp1'], symbol)} / ${format_price(pos['tp2'], symbol)}")
-        cols[5].markdown(
-            f"**PnL:** <span style='color:{pnl_color}'>{pos['unrealized_pnl']:+.2f}% "
-            f"({pos.get('unrealized_pnl_usdt', 0):+.2f} USDT)</span>", unsafe_allow_html=True
-        )
-    elif sim["running"]:
-        st.info("⏳ Flat — menunggu sinyal BUY/SELL untuk membuka posisi...")
-
-    if sim["equity_curve"] and len(sim["equity_curve"]) > 1:
-        st.markdown("#### Equity Curve (Live)")
-        eq_df = pd.DataFrame(sim["equity_curve"]).set_index("time")
-        _line_chart_compat(eq_df["equity"], key=f"equity_chart_{len(sim['equity_curve'])}")
-
-    try:
-        trade_history_expander = st.expander("📜 Riwayat Trade (Sesi Ini)", expanded=False, key="riwayat_trade_expander")
-    except TypeError:
-        trade_history_expander = st.expander("📜 Riwayat Trade (Sesi Ini)", expanded=False)
-
-    with trade_history_expander:
-        st.caption(f"Total trade selesai (sesi ini): **{total_trades}**")
-        if trades_snapshot:
-            trades_df = pd.DataFrame(trades_snapshot)
-            keep_cols = ['entry_time', 'direction', 'entry_price', 'exit_price', 'profit_pct', 'pnl_usdt', 'exit_reason']
-            keep_cols = [c for c in keep_cols if c in trades_df.columns]
-            display_df = trades_df[keep_cols].copy()
-            display_df['entry_time'] = pd.to_datetime(display_df['entry_time']).dt.strftime('%Y-%m-%d %H:%M:%S')
-            display_df['direction'] = display_df['direction'].apply(lambda x: '🟢 LONG' if x == 'LONG' else '🔴 SHORT')
-            display_df['entry_price'] = display_df['entry_price'].apply(lambda x: f"${format_price(x, symbol)}")
-            display_df['exit_price'] = display_df['exit_price'].apply(lambda x: f"${format_price(x, symbol)}" if pd.notna(x) else "-")
-            display_df['profit_pct'] = display_df['profit_pct'].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
-            if 'pnl_usdt' in display_df.columns:
-                display_df['pnl_usdt'] = display_df['pnl_usdt'].apply(lambda x: f"{x:+.2f}" if pd.notna(x) else "-")
-            st.dataframe(display_df.iloc[::-1], use_container_width=True, height=280,
-                         key=f"trades_table_{total_trades}")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        leverage = st.slider("Leverage", 1, 125, 10, 1, key=f"order_leverage_{mode}")
+    with c2:
+        if mode == "demo":
+            available = wallet["balance"] - wallet_used_margin(wallet)
+            pct_quick = st.select_slider(
+                "Margin (% saldo tersedia)", options=[5, 10, 25, 50, 75, 100], value=10,
+                key="order_margin_pct"
+            )
+            margin_usdt = round(max(available, 0) * pct_quick / 100, 2)
+            st.caption(f"Margin dipakai: **${margin_usdt:,.2f}** dari tersedia ${format_number(available)}")
         else:
-            st.info("Belum ada trade yang selesai di sesi ini.")
+            margin_usdt = st.number_input("Margin (USDT)", min_value=5.0, value=50.0, step=5.0, key="order_margin_real")
+    with c3:
+        st.metric("Harga Sekarang", f"${format_price(mark_price, symbol)}")
 
-    if is_live and sim.get("log"):
-        with st.expander("📜 Log Eksekusi", expanded=False):
-            for line in sim["log"]:
-                st.text(line)
+    notional = margin_usdt * leverage
+    qty_preview = (notional / mark_price) if mark_price else 0.0
+    liq_long = _calc_liq_price("LONG", mark_price, leverage)
+    liq_short = _calc_liq_price("SHORT", mark_price, leverage)
 
-    if not sim["running"] and sim["tick_count"] == 0:
-        hint = "Arm dulu di panel Koneksi Exchange, lalu tekan **Start**." if is_live else "Tekan **Start** untuk mulai memantau sinyal secara real-time."
-        st.caption(hint)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        sl_price = st.number_input("Stop Loss (harga)", value=float(default_sl), format="%.6f", key=f"order_sl_{mode}")
+    with c2:
+        tp1_price = st.number_input("Take Profit 1 (harga)", value=float(default_tp1), format="%.6f", key=f"order_tp1_{mode}")
+    with c3:
+        tp2_price = st.number_input("Take Profit 2 (harga)", value=float(default_tp2), format="%.6f", key=f"order_tp2_{mode}")
+
+    st.caption(
+        f"📐 Notional: **${notional:,.2f}** · Qty ≈ **{qty_preview:.6f}** · "
+        f"Est. Liq jika LONG ≈ ${format_price(liq_long, symbol)} · "
+        f"Est. Liq jika SHORT ≈ ${format_price(liq_short, symbol)}"
+    )
+
+    confirm_real = True
+    if mode == "real":
+        confirm_real = st.checkbox("Saya paham ini order live dengan uang sungguhan", key="confirm_real_order")
+
+    cbtn1, cbtn2 = st.columns(2)
+    with cbtn1:
+        if st.button("🟢 Buka LONG", use_container_width=True, type="primary",
+                      disabled=not confirm_real, key=f"btn_open_long_{mode}"):
+            _execute_open(state, mode, exchange_name, symbol, timeframe, "LONG", mark_price,
+                          leverage, margin_usdt, sl_price, tp1_price, tp2_price, client)
+    with cbtn2:
+        if st.button("🔴 Buka SHORT", use_container_width=True,
+                      disabled=not confirm_real, key=f"btn_open_short_{mode}"):
+            _execute_open(state, mode, exchange_name, symbol, timeframe, "SHORT", mark_price,
+                          leverage, margin_usdt, sl_price, tp1_price, tp2_price, client)
 
 
-def render_persistent_trade_history_ui(symbol: str) -> None:
-    """FITUR BARU: riwayat trade PERMANEN dari disk — tetap ada walau tab/
-    browser ditutup, halaman di-refresh, atau kamu buka lagi besok. Terpisah
-    dari 'Riwayat Trade (Sesi Ini)' di atas yang cuma hidup selama sesi
-    browser berjalan."""
+def _execute_open(state: Dict[str, Any], mode: str, exchange_name: str, symbol: str, timeframe: str,
+                   direction: str, price: float, leverage: int, margin_usdt: float,
+                   sl: float, tp1: float, tp2: float, client: Any) -> None:
+    if mode == "demo":
+        pos, err = open_position(state, "demo", exchange_name, symbol, timeframe, direction,
+                                  price, leverage, margin_usdt, sl, tp1, tp2)
+        if err:
+            st.error(err)
+        else:
+            st.success(f"✅ Posisi {direction} dibuka @ ${format_price(price, symbol)} (leverage {leverage}x)")
+            st.rerun()
+        return
+
+    notional = margin_usdt * leverage
+    try_set_leverage(client, symbol, leverage)
+    amount = _amount_for_notional(client, symbol, notional, price)
+    if amount <= 0:
+        st.error("Ukuran order terlalu kecil, perbesar margin atau leverage.")
+        return
+    side = "buy" if direction == "LONG" else "sell"
+    try:
+        order = client.create_order(symbol, "market", side, amount)
+        filled_price = float(order.get("average") or order.get("price") or price)
+        filled_amount = float(order.get("filled") or amount)
+    except Exception as e:
+        st.error(f"❌ Gagal membuka posisi live: {e}")
+        return
+
+    pos = {
+        "id": str(uuid.uuid4())[:8], "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
+        "direction": direction, "entry_price": filled_price, "qty": filled_amount,
+        "leverage": int(leverage), "margin": float(margin_usdt), "notional": filled_amount * filled_price,
+        "sl": float(sl) if sl else None, "tp1": float(tp1) if tp1 else None, "tp2": float(tp2) if tp2 else None,
+        "liq_price": _calc_liq_price(direction, filled_price, leverage),
+        "entry_time": datetime.now().isoformat(), "last_checked": datetime.now().isoformat(),
+        "source": "manual", "status": "OPEN",
+    }
+    warn = try_place_native_protection(client, exchange_name, symbol, direction, filled_amount, sl, tp2)
+    state["real"]["positions"].append(pos)
+    save_wallet_state(state)
+    st.success(f"✅ [LIVE] Posisi {direction} dibuka @ ${format_price(filled_price, symbol)} (leverage {leverage}x)")
+    if warn:
+        st.warning(f"⚠️ {warn} — pasang manual di exchange sebagai cadangan agar tetap terlindungi saat app offline.")
+    st.rerun()
+
+
+def _render_open_positions(state: Dict[str, Any], mode: str, mark_prices: Dict[str, float], client: Any) -> None:
+    wallet = state[mode]
+    positions = wallet.get("positions", [])
+    st.markdown(f"#### 📌 Posisi Terbuka ({len(positions)})")
+    if not positions:
+        st.info("Belum ada posisi terbuka.")
+        return
+    for pos in positions:
+        mp = mark_prices.get(pos["symbol"]) or pos["entry_price"]
+        pnl, roi = _position_unrealized(pos, mp)
+        color = "#00e676" if pnl > 0 else ("#ff5252" if pnl < 0 else "#d8e3ee")
+        with st.container(border=True):
+            if pos.get("_offline_alert"):
+                st.warning(f"⚠️ {pos['_offline_alert']}")
+            c1, c2, c3, c4, c5, c6 = st.columns([1.3, 1, 1, 1.3, 1, 1.2])
+            c1.markdown(f"**{'🟢' if pos['direction']=='LONG' else '🔴'} {pos['symbol']}** · {pos['leverage']}x")
+            c2.markdown(f"Entry\n`${format_price(pos['entry_price'], pos['symbol'])}`")
+            c3.markdown(f"Mark\n`${format_price(mp, pos['symbol'])}`")
+            c4.markdown(
+                f"SL/TP1/TP2\n`{format_price(pos.get('sl'), pos['symbol'])}` / "
+                f"`{format_price(pos.get('tp1'), pos['symbol'])}` / `{format_price(pos.get('tp2'), pos['symbol'])}`"
+            )
+            c5.markdown(f"Liq\n`${format_price(pos.get('liq_price'), pos['symbol'])}`")
+            c6.markdown(
+                f"<span style='color:{color}'>{pnl:+.2f} USDT<br/>({roi:+.2f}%)</span>",
+                unsafe_allow_html=True
+            )
+            if st.button("✖️ Tutup Posisi", key=f"close_{mode}_{pos['id']}"):
+                trade = close_position(state, mode, pos["id"], mp, "Manual Close", client)
+                if trade:
+                    st.success(f"Posisi ditutup: {trade['pnl_usdt']:+.2f} USDT ({trade['roi_pct']:+.2f}%)")
+                    st.rerun()
+                else:
+                    st.error("Gagal menutup posisi (untuk mode Real, pastikan API masih terhubung).")
+
+
+def _render_equity_history_chart(mode: str) -> None:
+    history = load_trade_history_from_disk()
+    history = [h for h in history if (h.get("sim_mode") or "").lower() == mode]
+    balances = [{"time": h.get("exit_time"), "balance": h.get("balance_after")}
+                for h in history if h.get("exit_time") and h.get("balance_after") is not None]
+    if len(balances) < 2:
+        return
+    df_eq = pd.DataFrame(balances)
+    df_eq["time"] = pd.to_datetime(df_eq["time"])
+    df_eq = df_eq.sort_values("time").set_index("time")
+    st.markdown("#### 📈 Riwayat Saldo (dari trade yang sudah ditutup)")
+    st.line_chart(df_eq["balance"])
+
+
+def render_persistent_trade_history_ui(symbol: str, mode_filter: Optional[str] = None) -> None:
     st.markdown("---")
     st.markdown("### 💾 Riwayat Trade Permanen (Tersimpan di Disk)")
     st.caption(
-        "Setiap kali posisi ditutup (SL/TP/reverse/manual/emergency), trade langsung disimpan ke file di "
-        "server — jadi tetap ada meski browser/tab kamu tutup atau halaman ini di-refresh. Kalau server "
-        "kamu redeploy total (mis. beberapa layanan cloud gratis mereset disk saat deploy baru), gunakan "
-        "tombol Export CSV di bawah sebagai cadangan sebelum itu terjadi."
+        "Setiap kali posisi ditutup (SL/TP/Liquidation/manual), trade langsung disimpan ke file di server — "
+        "singkron otomatis dengan wallet & posisi di atas, dan tetap ada meski browser/tab kamu tutup atau "
+        "halaman ini di-refresh. Gunakan tombol Export CSV di bawah sebagai cadangan tambahan."
     )
 
     history = load_trade_history_from_disk()
+    if mode_filter:
+        history = [h for h in history if (h.get("sim_mode") or "").lower() == mode_filter.lower()]
+
     hc1, hc2, hc3 = st.columns([1, 1, 2])
     with hc1:
         st.metric("Total Trade Tersimpan", len(history))
@@ -2372,6 +2226,93 @@ def render_persistent_trade_history_ui(symbol: str) -> None:
     )
 
 
+def render_wallet_trading_ui(exchange_name: str, symbol: str, timeframe: str, mtf_enabled: bool) -> None:
+    st.markdown("### 💰 Wallet Trading — Futures Simulator")
+    st.caption(
+        "Wallet Demo memakai saldo virtual yang bisa kamu atur manual dan tersimpan permanen di server "
+        "(cross margin — satu saldo dipakai bersama untuk semua posisi/coin). Wallet Real mengeksekusi "
+        "order sungguhan ke exchange kamu. Posisi terbuka disimpan di disk (bukan hanya sesi browser) — "
+        "saat kamu buka lagi appnya, sistem mengecek data candle historis untuk tahu apakah SL/TP/Liquidasi "
+        "sempat tersentuh selagi kamu offline, lalu menyingkronkan otomatis."
+    )
+
+    mode_label = st.radio("Pilih Wallet", ["🧪 Demo", "🔴 Real"], horizontal=True, key="wallet_mode_choice")
+    mode = "demo" if mode_label.startswith("🧪") else "real"
+
+    refresh_sec = st.selectbox("Interval Refresh Harga/Posisi", [2, 3, 5, 10], index=1,
+                                format_func=lambda s: f"{s}s", key="wallet_refresh_sec")
+
+    render_wallet_trading_fragment(exchange_name, symbol, timeframe, mtf_enabled, mode, refresh_sec)
+
+
+def render_wallet_trading_fragment(exchange_name: str, symbol: str, timeframe: str, mtf_enabled: bool,
+                                    mode: str, refresh_sec: int) -> None:
+    def _body():
+        _wallet_trading_body(exchange_name, symbol, timeframe, mtf_enabled, mode)
+
+    if _fragment_decorator is None:
+        _body()
+        st.info("ℹ️ Update Streamlit ke versi >=1.37 agar wallet auto-refresh tanpa reload halaman.")
+        return
+
+    @_fragment_decorator(run_every=refresh_sec)
+    def _fragment_body():
+        _body()
+
+    _fragment_body()
+
+
+def _wallet_trading_body(exchange_name: str, symbol: str, timeframe: str, mtf_enabled: bool, mode: str) -> None:
+    state = load_wallet_state()
+
+    client = None
+    if mode == "real":
+        client = _render_real_wallet_connection(exchange_name)
+    else:
+        _render_demo_balance_editor(state)
+
+    closed_now = reconcile_wallet_positions(state, mode, client)
+    if closed_now:
+        state = load_wallet_state()
+        for t in closed_now:
+            st.toast(f"🔔 Posisi {t['symbol']} {t['direction']} ditutup ({t['exit_reason']}) {t['pnl_usdt']:+.2f} USDT")
+
+    wallet = state[mode]
+
+    symbols_needed = set(p["symbol"] for p in wallet.get("positions", [])) | {symbol}
+    mark_prices: Dict[str, float] = {}
+    for sym in symbols_needed:
+        d = get_live_data(exchange_name, sym)
+        mark_prices[sym] = d.get("price") or 0.0
+
+    used_margin = wallet_used_margin(wallet)
+    c1, c2, c3, c4 = st.columns(4)
+    if mode == "demo":
+        equity = wallet_equity(wallet, mark_prices)
+        c1.metric("Equity (MTM)", f"${format_number(equity)}", format_percentage(safe_pct_change(equity, wallet["balance"])))
+        c2.metric("Saldo Tersimpan", f"${format_number(wallet['balance'])}")
+        c3.metric("Margin Terpakai", f"${format_number(used_margin)}")
+        c4.metric("Margin Tersedia", f"${format_number(wallet['balance'] - used_margin)}")
+    else:
+        live_bal = None
+        if client is not None:
+            live_bal, _ = fetch_usdt_balance(client)
+        c1.metric("Saldo USDT (Live)", f"${format_number(live_bal)}" if live_bal is not None else "-")
+        c2.metric("Posisi Terbuka", len(wallet.get("positions", [])))
+        c3.metric("Margin Terpakai (est.)", f"${format_number(used_margin)}")
+        c4.metric("", "")
+
+    st.divider()
+    _render_order_form(state, mode, exchange_name, symbol, timeframe, client, mark_prices.get(symbol, 0.0))
+
+    st.divider()
+    _render_open_positions(state, mode, mark_prices, client)
+
+    _render_equity_history_chart(mode)
+
+    render_persistent_trade_history_ui(symbol, mode_filter=mode)
+
+
 def render_telegram_ui() -> None:
     st.markdown("### 🤖 Telegram Bot")
 
@@ -2397,7 +2338,7 @@ def render_mtf_ui() -> bool:
     st.markdown("### ⏱️ Multi-Timeframe")
     st.info("Kalau aktif: sinyal BUY/SELL di timeframe utama dicek ulang terhadap 1 timeframe "
             "lebih besar. Kalau berlawanan arah, sinyal otomatis didinginkan jadi HOLD (dipakai di "
-            "tab Analisa, Live Simulator, dan Coin Scanner).")
+            "tab Analisa dan Coin Scanner).")
     return st.checkbox("Enable MTF", value=True)
 
 # =============================================================================
@@ -2668,15 +2609,10 @@ def render_logout_button() -> None:
 # =============================================================================
 # NAVIGASI UTAMA (pengganti st.tabs)
 # =============================================================================
-# FIX: st.tabs bawaan Streamlit TIDAK bisa di-switch programatically dari
-# kode (mis. saat klik tombol "buka di Analisa" pada Coin Scanner). Makanya
-# navigasi diganti dengan tombol biasa yang disinkronkan lewat
-# st.session_state['active_section'] — sehingga Coin Scanner & Market Cap
-# bisa "melompat" ke tab Grafik & Analisa secara otomatis (poin #4).
 
 SECTION_LABELS: Dict[str, str] = {
     "chart": "📊 Grafik & Analisa Sinyal",
-    "sim": "🤖 Live Simulator",
+    "sim": "💰 Wallet Trading",
     "scanner": "📡 Coin Scanner",
     "market": "📈 Market Cap & Trending",
 }
@@ -2813,7 +2749,7 @@ def main() -> None:
                     st.rerun()
 
         st.divider()
-        st.caption("💡 Harga live, Grafik/Sinyal, dan Live Simulator auto-refresh sendiri (st.fragment). "
+        st.caption("💡 Harga live, Grafik/Sinyal, dan Wallet Trading auto-refresh sendiri (st.fragment). "
                    "Klik coin di Coin Scanner / Market Cap untuk langsung lompat ke Grafik & Analisa.")
 
     symbol = st.session_state.selected_symbol
@@ -2834,7 +2770,7 @@ def main() -> None:
         render_analysis_fragment(exchange_name, symbol, timeframe, limit, mtf_enabled,
                                   chart_refresh_sec, auto_refresh_chart)
     elif active_section == "sim":
-        render_live_simulator_ui(exchange_name, symbol, timeframe, mtf_enabled)
+        render_wallet_trading_ui(exchange_name, symbol, timeframe, mtf_enabled)
     elif active_section == "scanner":
         render_coin_scanner_ui(exchange_name, timeframe, mtf_enabled)
     elif active_section == "market":

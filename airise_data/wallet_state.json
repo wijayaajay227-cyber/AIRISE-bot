@@ -1,0 +1,11 @@
+{
+  "demo": {
+    "balance": 100.0,
+    "positions": [],
+    "last_checked": "2026-07-21T16:52:45.063604"
+  },
+  "real": {
+    "positions": [],
+    "last_checked": "2026-07-21T16:51:15.635823"
+  }
+}
