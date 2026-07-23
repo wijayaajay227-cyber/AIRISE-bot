@@ -264,7 +264,14 @@ def resolve_symbol(target: str, all_symbols: List[str]) -> Optional[str]:
             return s
     return None
 
-@st.cache_data(ttl=30, show_spinner=False)
+# Semua pemanggil get_ohlcv() untuk keperluan Wallet Trading (form order, reconcile
+# posisi, auto-bot) WAJIB memakai limit yang SAMA persis untuk symbol+timeframe yang
+# sama, supaya ketiganya berbagi SATU entri cache & satu request jaringan per siklus
+# refresh — bukan tiga request terpisah (yang sebelumnya memicu rate-limit exchange
+# seperti Gate.io "TOO_MANY_REQUESTS").
+WALLET_OHLCV_LIMIT: int = 300
+
+@st.cache_data(ttl=60, show_spinner=False)
 def get_ohlcv(exchange_name: str, symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
     try:
         exchange = get_exchange(exchange_name)
@@ -273,7 +280,14 @@ def get_ohlcv(exchange_name: str, symbol: str, timeframe: str, limit: int = 300)
         df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
     except Exception as e:
-        st.error(f"Error mengambil data OHLCV: {e}")
+        msg = str(e)
+        if "TOO_MANY_REQUESTS" in msg or "Rate Limit" in msg or "rate limit" in msg:
+            st.warning(
+                f"⏳ Rate limit exchange tercapai untuk {symbol} ({timeframe}) — data akan dicoba lagi otomatis "
+                "beberapa saat lagi. Kalau sering muncul, coba perbesar interval Auto-Refresh di sidebar/panel."
+            )
+        else:
+            st.error(f"Error mengambil data OHLCV: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -1103,8 +1117,8 @@ LIVE_CREDS_KEY: str = "live_creds"
 def _default_wallet_state() -> Dict[str, Any]:
     now = datetime.now().isoformat()
     return {
-        "demo": {"balance": DEMO_DEFAULT_BALANCE, "positions": [], "last_checked": now},
-        "real": {"positions": [], "last_checked": now},
+        "demo": {"balance": DEMO_DEFAULT_BALANCE, "positions": [], "last_checked": now, "auto_bot": None},
+        "real": {"positions": [], "last_checked": now, "auto_bot": None},
     }
 
 def load_wallet_state() -> Dict[str, Any]:
@@ -1123,6 +1137,8 @@ def load_wallet_state() -> Dict[str, Any]:
         data["demo"].setdefault("positions", [])
         data["real"].setdefault("positions", [])
         data["demo"].setdefault("balance", DEMO_DEFAULT_BALANCE)
+        data["demo"].setdefault("auto_bot", None)
+        data["real"].setdefault("auto_bot", None)
         return data
     except Exception:
         return _default_wallet_state()
@@ -1253,7 +1269,7 @@ def reconcile_wallet_positions(state: Dict[str, Any], mode: str, client: Any = N
 
         tf = pos.get("timeframe") or "5m"
         try:
-            df = get_ohlcv(pos["exchange"], pos["symbol"], tf, limit=300)
+            df = get_ohlcv(pos["exchange"], pos["symbol"], tf, limit=WALLET_OHLCV_LIMIT)
         except Exception:
             df = pd.DataFrame()
 
@@ -1376,6 +1392,199 @@ def cancel_all_open_orders(client: Any, symbol: str) -> None:
         client.cancel_all_orders(symbol)
     except Exception:
         pass
+
+
+# =============================================================================
+# AUTO-BOT — LONG/SHORT OTOMATIS mengikuti signal engine (Demo & Real)
+# =============================================================================
+# Bot ini bekerja dengan prinsip "catch-up replay": setiap kali halaman Wallet
+# Trading dibuka/refresh, sistem mengambil candle historis sejak terakhir bot
+# dicek, lalu MEREPLAY candle demi candle — kalau sedang flat & sinyal
+# BUY/SELL muncul, bot "membuka" posisi persis di candle itu; kalau sedang
+# ada posisi, bot mengecek SL/TP/Liquidation di tiap candle sampai posisi
+# tertutup, lalu lanjut mencari sinyal berikutnya. Dengan cara ini, bot tetap
+# "berjalan sesuai analisa" walau app/browser kamu tutup — begitu dibuka lagi
+# ia mengejar apa yang seharusnya terjadi selama itu (dibatasi jumlah candle
+# yang bisa diambil dari exchange, mis. 500 candle terakhir).
+#
+# Demi keamanan, untuk Wallet REAL, bot HANYA mengeksekusi order BUKA posisi
+# baru bila sinyalnya berasal dari candle yang benar-benar baru (beberapa
+# menit terakhir) — bukan dari histori lama — supaya tidak asal entry live
+# di harga masa lalu yang sudah tidak relevan. Menutup posisi (SL/TP) tetap
+# otomatis mengejar histori seperti biasa karena itu memang seharusnya
+# terjadi kapan pun candle-nya.
+
+AUTO_BOT_MAX_CANDLES: int = WALLET_OHLCV_LIMIT
+AUTO_BOT_REAL_FRESH_MINUTES: int = 5
+
+TIMEFRAME_SECONDS: Dict[str, int] = {
+    "1m": 60, "5m": 300, "15m": 900, "1h": 3600,
+    "4h": 14400, "1d": 86400, "1w": 604800,
+}
+
+def _seconds_until_next_candle(timeframe: str) -> int:
+    """Hitung berapa detik lagi sampai candle berikutnya terbentuk pada
+    timeframe tertentu — dipakai sebagai 'timer' Auto-Bot supaya user tahu
+    kapan bot akan mengevaluasi ulang sinyal (candle baru)."""
+    interval = TIMEFRAME_SECONDS.get(timeframe, 900)
+    now_ts = datetime.now().timestamp()
+    elapsed = now_ts % interval
+    return int(interval - elapsed)
+
+def _format_countdown(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h}j {m:02d}m {s:02d}d"
+    return f"{m:02d}:{s:02d}"
+
+def _default_auto_bot_cfg(exchange_name: str, symbol: str, timeframe: str) -> Dict[str, Any]:
+    return {
+        "enabled": False, "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
+        "leverage": 10, "margin_pct": 10.0, "margin_usdt": 50.0,
+        "tp_pct": 3.0, "sl_pct": 5.0,
+        "last_checked": datetime.now().isoformat(),
+    }
+
+def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -> List[Dict[str, Any]]:
+    wallet = state[mode]
+    bot_cfg = wallet.get("auto_bot")
+    if not bot_cfg or not bot_cfg.get("enabled"):
+        return []
+
+    exchange_name = bot_cfg["exchange"]
+    symbol = bot_cfg["symbol"]
+    timeframe = bot_cfg["timeframe"]
+
+    try:
+        since_dt = datetime.fromisoformat(bot_cfg.get("last_checked")) if bot_cfg.get("last_checked") else None
+    except Exception:
+        since_dt = None
+
+    try:
+        df = get_ohlcv(exchange_name, symbol, timeframe, limit=AUTO_BOT_MAX_CANDLES)
+    except Exception:
+        df = pd.DataFrame()
+    if df.empty or len(df) < 60:
+        return []
+    df = add_indicators(df)
+
+    events: List[Dict[str, Any]] = []
+    open_pos = next((p for p in wallet["positions"]
+                      if p.get("source") == "auto-bot" and p["symbol"] == symbol), None)
+
+    start_idx = 60
+    if since_dt is not None:
+        mask = df["date"] > since_dt
+        if mask.any():
+            start_idx = max(60, int(np.argmax(mask.values)))
+        else:
+            start_idx = len(df)
+
+    last_processed_time = bot_cfg.get("last_checked")
+
+    for i in range(start_idx, len(df)):
+        row = df.iloc[i]
+        row_time = row["date"]
+        hi, lo, close_price = float(row["high"]), float(row["low"]), float(row["close"])
+
+        if open_pos is not None:
+            exit_price = None
+            exit_reason = None
+            if open_pos["direction"] == "LONG":
+                if open_pos.get("liq_price") and lo <= open_pos["liq_price"]:
+                    exit_price, exit_reason = open_pos["liq_price"], "Liquidation"
+                elif open_pos.get("sl") and lo <= open_pos["sl"]:
+                    exit_price, exit_reason = open_pos["sl"], "SL Hit"
+                elif open_pos.get("tp1") and hi >= open_pos["tp1"]:
+                    exit_price, exit_reason = open_pos["tp1"], "TP Hit"
+            else:
+                if open_pos.get("liq_price") and hi >= open_pos["liq_price"]:
+                    exit_price, exit_reason = open_pos["liq_price"], "Liquidation"
+                elif open_pos.get("sl") and hi >= open_pos["sl"]:
+                    exit_price, exit_reason = open_pos["sl"], "SL Hit"
+                elif open_pos.get("tp1") and lo <= open_pos["tp1"]:
+                    exit_price, exit_reason = open_pos["tp1"], "TP Hit"
+
+            if exit_price is not None:
+                if mode == "real" and client is None:
+                    open_pos["_offline_alert"] = (
+                        f"Auto-Bot: histori menyentuh {exit_reason} (~{exit_price}). Cek posisi ini di exchange."
+                    )
+                else:
+                    trade = close_position(state, mode, open_pos["id"], exit_price, f"Auto-Bot {exit_reason}", client)
+                    if trade:
+                        events.append(trade)
+                    open_pos = None
+            last_processed_time = row_time.isoformat()
+            continue
+
+        sub_df = df.iloc[: i + 1]
+        sig = analyze_single_timeframe(sub_df)
+        if sig.direction in ("BUY", "SELL"):
+            direction = "LONG" if sig.direction == "BUY" else "SHORT"
+
+            if direction == "LONG":
+                sl = close_price * (1 - bot_cfg["sl_pct"] / 100)
+                tp = close_price * (1 + bot_cfg["tp_pct"] / 100)
+            else:
+                sl = close_price * (1 + bot_cfg["sl_pct"] / 100)
+                tp = close_price * (1 - bot_cfg["tp_pct"] / 100)
+
+            if mode == "demo":
+                available = wallet["balance"] - wallet_used_margin(wallet)
+                margin_usdt = max(available, 0) * bot_cfg["margin_pct"] / 100
+                if margin_usdt > 1:
+                    pos, err = open_position(state, "demo", exchange_name, symbol, timeframe, direction,
+                                              close_price, bot_cfg["leverage"], margin_usdt, sl, tp, tp,
+                                              source="auto-bot")
+                    if pos:
+                        pos["entry_time"] = row_time.isoformat()
+                        pos["last_checked"] = row_time.isoformat()
+                        save_wallet_state(state)
+                        open_pos = pos
+                        events.append({"opened": True, "symbol": symbol, "direction": direction,
+                                        "entry_price": close_price, "pnl_usdt": 0.0, "exit_reason": "Auto-Bot Open"})
+            else:
+                is_fresh = row_time >= (datetime.now() - pd.Timedelta(minutes=AUTO_BOT_REAL_FRESH_MINUTES))
+                if client is not None and is_fresh:
+                    margin_usdt = bot_cfg["margin_usdt"]
+                    notional = margin_usdt * bot_cfg["leverage"]
+                    try_set_leverage(client, symbol, bot_cfg["leverage"])
+                    amount = _amount_for_notional(client, symbol, notional, close_price)
+                    if amount > 0:
+                        side = "buy" if direction == "LONG" else "sell"
+                        try:
+                            order = client.create_order(symbol, "market", side, amount)
+                            filled_price = float(order.get("average") or order.get("price") or close_price)
+                            filled_amount = float(order.get("filled") or amount)
+                            pos = {
+                                "id": str(uuid.uuid4())[:8], "exchange": exchange_name, "symbol": symbol,
+                                "timeframe": timeframe, "direction": direction, "entry_price": filled_price,
+                                "qty": filled_amount, "leverage": int(bot_cfg["leverage"]),
+                                "margin": float(margin_usdt), "notional": filled_amount * filled_price,
+                                "sl": float(sl), "tp1": float(tp), "tp2": float(tp),
+                                "liq_price": _calc_liq_price(direction, filled_price, bot_cfg["leverage"]),
+                                "entry_time": row_time.isoformat(), "last_checked": row_time.isoformat(),
+                                "source": "auto-bot", "status": "OPEN",
+                            }
+                            try_place_native_protection(client, exchange_name, symbol, direction,
+                                                         filled_amount, sl, tp)
+                            wallet["positions"].append(pos)
+                            save_wallet_state(state)
+                            open_pos = pos
+                            events.append({"opened": True, "symbol": symbol, "direction": direction,
+                                            "entry_price": filled_price, "pnl_usdt": 0.0, "exit_reason": "Auto-Bot Open"})
+                        except Exception:
+                            pass
+
+        last_processed_time = row_time.isoformat()
+
+    bot_cfg["last_checked"] = last_processed_time or datetime.now().isoformat()
+    wallet["auto_bot"] = bot_cfg
+    save_wallet_state(state)
+    return events
 
 
 # =============================================================================
@@ -2015,6 +2224,118 @@ def _render_real_wallet_connection(exchange_name: str) -> Optional[Any]:
     return creds.get("client") if creds.get("connected") else None
 
 
+def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str, symbol: str,
+                            timeframe: str, client: Any) -> None:
+    wallet = state[mode]
+    existing_cfg = wallet.get("auto_bot")
+    bot_cfg = existing_cfg or _default_auto_bot_cfg(exchange_name, symbol, timeframe)
+    was_enabled = bool(existing_cfg and existing_cfg.get("enabled"))
+    was_same_target = bool(
+        existing_cfg and existing_cfg.get("symbol") == symbol
+        and existing_cfg.get("timeframe") == timeframe and existing_cfg.get("exchange") == exchange_name
+    )
+
+    with st.expander("🤖 Auto-Bot LONG/SHORT Otomatis", expanded=bot_cfg.get("enabled", False)):
+        st.caption(
+            "Bot membuka posisi **LONG/SHORT otomatis** mengikuti sinyal analisa (EMA+RSI+MACD+Bollinger+"
+            "Stochastic+Volume+ADX) pada coin & timeframe yang sedang aktif — tanpa perlu klik tombol manual. "
+            "Karena app tidak berjalan di background, saat kamu buka lagi halaman ini bot akan mengejar candle "
+            "historis sejak terakhir dicek untuk membuka/menutup posisi seolah berjalan terus (dibatasi "
+            f"maksimum {AUTO_BOT_MAX_CANDLES} candle terakhir). Auto-Bot tidak memakai konfirmasi MTF supaya "
+            "proses catch-up konsisten & ringan, dan hanya 1 posisi otomatis aktif per coin."
+        )
+        if mode == "real":
+            st.caption(
+                f"⚠️ Untuk Wallet Real, Auto-Bot hanya MEMBUKA posisi baru dari sinyal yang benar-benar baru "
+                f"(≤{AUTO_BOT_REAL_FRESH_MINUTES} menit terakhir) demi keamanan — tidak entry live di harga "
+                "masa lalu. Menutup posisi (SL/TP) tetap otomatis mengejar histori seperti biasa."
+            )
+
+        # --- Timer / countdown: kapan bot akan mengevaluasi ulang sinyal ---
+        secs_left = _seconds_until_next_candle(timeframe)
+        tc1, tc2, tc3 = st.columns(3)
+        tc1.metric("⏱️ Candle Berikutnya", _format_countdown(secs_left))
+        last_checked_disp = "-"
+        if existing_cfg and existing_cfg.get("last_checked"):
+            try:
+                last_checked_disp = datetime.fromisoformat(existing_cfg["last_checked"]).strftime("%H:%M:%S")
+            except Exception:
+                last_checked_disp = "-"
+        tc2.metric("🔎 Terakhir Dicek Bot", last_checked_disp)
+        tc3.metric("🔄 Auto-Refresh", "aktif" if _fragment_decorator is not None else "manual")
+        st.caption(
+            "Bot mengevaluasi ulang sinyal setiap kali halaman ini refresh DAN ada candle baru yang terbentuk "
+            "(timer di atas menghitung mundur ke penutupan candle berikutnya pada timeframe yang aktif)."
+        )
+
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            enabled = st.checkbox("Aktifkan Auto-Bot", value=bot_cfg.get("enabled", False), key=f"autobot_enabled_{mode}")
+        with c2:
+            st.caption(f"Coin & timeframe aktif: **{symbol} · {timeframe} · {exchange_name}**")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            leverage = st.slider("Leverage Bot", 1, 125, int(bot_cfg.get("leverage", 10)), 1, key=f"autobot_leverage_{mode}")
+        with c2:
+            if mode == "demo":
+                margin_pct = st.slider("Margin per Posisi (% saldo tersedia)", 1, 100,
+                                        int(bot_cfg.get("margin_pct", 10)), 1, key=f"autobot_marginpct_{mode}")
+                margin_usdt = bot_cfg.get("margin_usdt", 50.0)
+            else:
+                margin_usdt = st.number_input("Margin per Posisi (USDT)", min_value=5.0,
+                                               value=float(bot_cfg.get("margin_usdt", 50.0)), step=5.0,
+                                               key=f"autobot_marginusdt_{mode}")
+                margin_pct = bot_cfg.get("margin_pct", 10.0)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            tp_pct = st.slider("🎯 Target Profit / Win Rate (%)", 1.0, 10.0,
+                                float(bot_cfg.get("tp_pct", 3.0)), 0.5, key=f"autobot_tp_{mode}")
+        with c2:
+            sl_pct = st.slider("🛑 Stop Loss (%)", 1.0, 15.0,
+                                float(bot_cfg.get("sl_pct", 5.0)), 0.5, key=f"autobot_sl_{mode}")
+        st.caption(
+            f"Posisi LONG: TP di harga +{tp_pct:.1f}%, SL di -{sl_pct:.1f}% dari entry. "
+            f"Posisi SHORT: TP di -{tp_pct:.1f}%, SL di +{sl_pct:.1f}% dari entry."
+        )
+
+        confirm_real_bot = True
+        if mode == "real":
+            confirm_real_bot = st.checkbox(
+                "Saya paham Auto-Bot akan membuka order live otomatis dengan uang sungguhan",
+                key="confirm_real_autobot"
+            )
+
+        save_disabled = mode == "real" and enabled and not confirm_real_bot
+        if st.button("💾 Simpan Pengaturan Auto-Bot", key=f"save_autobot_{mode}", disabled=save_disabled):
+            # Reset checkpoint (last_checked) kalau ini aktivasi baru (sebelumnya nonaktif, atau target
+            # coin/timeframe/exchange berubah) — supaya sinyal yang SUDAH TAMPIL di layar saat ini langsung
+            # dievaluasi bot, bukan dianggap "sudah pernah dicek" dan malah dilewati.
+            fresh_activation = enabled and (not was_enabled or not was_same_target)
+            new_last_checked = None if fresh_activation else (bot_cfg.get("last_checked") or datetime.now().isoformat())
+
+            new_cfg = {
+                "enabled": enabled, "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
+                "leverage": int(leverage), "margin_pct": float(margin_pct), "margin_usdt": float(margin_usdt),
+                "tp_pct": float(tp_pct), "sl_pct": float(sl_pct),
+                "last_checked": new_last_checked,
+            }
+            wallet["auto_bot"] = new_cfg
+            save_wallet_state(state)
+            msg = "Pengaturan Auto-Bot disimpan."
+            if enabled:
+                msg += " Bot sekarang AKTIF" + (" — akan langsung mengevaluasi sinyal saat ini." if fresh_activation else ".")
+            st.success(msg)
+            st.rerun()
+
+        current_cfg = wallet.get("auto_bot") or {}
+        if current_cfg.get("enabled"):
+            st.success(f"🟢 Auto-Bot AKTIF di {current_cfg.get('symbol')} ({current_cfg.get('timeframe')})")
+        else:
+            st.caption("⚪ Auto-Bot nonaktif.")
+
+
 def _render_order_form(state: Dict[str, Any], mode: str, exchange_name: str, symbol: str,
                         timeframe: str, client: Any, mark_price: float) -> None:
     st.markdown("#### 🎯 Buka Posisi Baru")
@@ -2028,7 +2349,7 @@ def _render_order_form(state: Dict[str, Any], mode: str, exchange_name: str, sym
     wallet = state[mode]
     default_sl, default_tp1, default_tp2 = mark_price * 0.99, mark_price * 1.015, mark_price * 1.03
     try:
-        df = get_ohlcv(exchange_name, symbol, timeframe, 250)
+        df = get_ohlcv(exchange_name, symbol, timeframe, WALLET_OHLCV_LIMIT)
         if not df.empty and len(df) >= 55:
             sig = analyze_single_timeframe(add_indicators(df))
             default_sl, default_tp1, default_tp2 = sig.sl, sig.tp1, sig.tp2
@@ -2149,7 +2470,8 @@ def _render_open_positions(state: Dict[str, Any], mode: str, mark_prices: Dict[s
             if pos.get("_offline_alert"):
                 st.warning(f"⚠️ {pos['_offline_alert']}")
             c1, c2, c3, c4, c5, c6 = st.columns([1.3, 1, 1, 1.3, 1, 1.2])
-            c1.markdown(f"**{'🟢' if pos['direction']=='LONG' else '🔴'} {pos['symbol']}** · {pos['leverage']}x")
+            src_badge = "🤖 Auto" if pos.get("source") == "auto-bot" else "🖐️ Manual"
+            c1.markdown(f"**{'🟢' if pos['direction']=='LONG' else '🔴'} {pos['symbol']}** · {pos['leverage']}x · {src_badge}")
             c2.markdown(f"Entry\n`${format_price(pos['entry_price'], pos['symbol'])}`")
             c3.markdown(f"Mark\n`${format_price(mp, pos['symbol'])}`")
             c4.markdown(
@@ -2239,8 +2561,12 @@ def render_wallet_trading_ui(exchange_name: str, symbol: str, timeframe: str, mt
     mode_label = st.radio("Pilih Wallet", ["🧪 Demo", "🔴 Real"], horizontal=True, key="wallet_mode_choice")
     mode = "demo" if mode_label.startswith("🧪") else "real"
 
-    refresh_sec = st.selectbox("Interval Refresh Harga/Posisi", [2, 3, 5, 10], index=1,
+    refresh_sec = st.selectbox("Interval Refresh Harga/Posisi", [5, 10, 15, 30], index=1,
                                 format_func=lambda s: f"{s}s", key="wallet_refresh_sec")
+    st.caption(
+        "ℹ️ Interval lebih pendek = lebih real-time, tapi lebih sering memanggil API exchange. Kalau muncul "
+        "error 'Rate Limit Exceeded', perbesar interval ini (mis. 15s/30s)."
+    )
 
     render_wallet_trading_fragment(exchange_name, symbol, timeframe, mtf_enabled, mode, refresh_sec)
 
@@ -2270,6 +2596,18 @@ def _wallet_trading_body(exchange_name: str, symbol: str, timeframe: str, mtf_en
         client = _render_real_wallet_connection(exchange_name)
     else:
         _render_demo_balance_editor(state)
+
+    _render_auto_bot_panel(state, mode, exchange_name, symbol, timeframe, client)
+    state = load_wallet_state()
+
+    bot_events = run_auto_bot_catchup(state, mode, client)
+    if bot_events:
+        state = load_wallet_state()
+        for ev in bot_events:
+            if ev.get("opened"):
+                st.toast(f"🤖 Auto-Bot membuka {ev['direction']} {ev['symbol']} @ ${format_price(ev['entry_price'], ev['symbol'])}")
+            else:
+                st.toast(f"🤖 Auto-Bot menutup {ev['symbol']} {ev['direction']} ({ev['exit_reason']}) {ev['pnl_usdt']:+.2f} USDT")
 
     closed_now = reconcile_wallet_positions(state, mode, client)
     if closed_now:

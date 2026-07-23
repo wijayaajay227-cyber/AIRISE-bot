@@ -1,11 +1,45 @@
 {
   "demo": {
-    "balance": 100.0,
-    "positions": [],
-    "last_checked": "2026-07-21T16:52:45.063604"
+    "balance": 98.7236607142857,
+    "positions": [
+      {
+        "id": "31e6e925",
+        "exchange": "Gate.io",
+        "symbol": "BEAT/USDT:USDT",
+        "timeframe": "5m",
+        "direction": "LONG",
+        "entry_price": 2.8571,
+        "qty": 34.55379955699335,
+        "leverage": 10,
+        "margin": 9.87236607142857,
+        "notional": 98.72366071428569,
+        "sl": 2.714245,
+        "tp1": 2.942813,
+        "tp2": 2.942813,
+        "liq_price": 2.5856755000000002,
+        "entry_time": "2026-07-23T11:10:00",
+        "last_checked": "2026-07-23T18:48:57.303785",
+        "source": "auto-bot",
+        "status": "OPEN"
+      }
+    ],
+    "last_checked": "2026-07-23T18:47:44.208236",
+    "auto_bot": {
+      "enabled": true,
+      "exchange": "Gate.io",
+      "symbol": "BEAT/USDT:USDT",
+      "timeframe": "5m",
+      "leverage": 10,
+      "margin_pct": 10.0,
+      "margin_usdt": 50.0,
+      "tp_pct": 3.0,
+      "sl_pct": 5.0,
+      "last_checked": "2026-07-23T11:45:00"
+    }
   },
   "real": {
     "positions": [],
-    "last_checked": "2026-07-21T16:51:15.635823"
+    "last_checked": "2026-07-21T16:51:15.635823",
+    "auto_bot": null
   }
 }
