@@ -1246,9 +1246,16 @@ def close_position(state: Dict[str, Any], mode: str, pos_id: str, exit_price: fl
     return trade_record
 
 def reconcile_wallet_positions(state: Dict[str, Any], mode: str, client: Any = None) -> List[Dict[str, Any]]:
-    """Cek posisi terbuka terhadap candle historis sejak terakhir dicek, supaya
-    SL/TP/Liquidation yang kena SELAGI APP TERTUTUP tetap terdeteksi & posisi
-    otomatis ditutup dengan benar begitu app dibuka lagi."""
+    """Cek posisi terbuka dengan DUA lapis:
+    1) Live price check (harga ticker saat ini) — ini yang membuat SL/TP kesentuh
+       terdeteksi SEKETIKA, tidak perlu menunggu candle tutup.
+    2) Catch-up terhadap candle yang SUDAH TUTUP sejak terakhir dicek (untuk
+       menangkap SL/TP yang kena SELAGI APP TERTUTUP). Candle yang masih
+       berjalan (belum tutup) SENGAJA tidak dipakai untuk menandai "terakhir
+       dicek" — supaya kalau harga baru menyentuh SL/TP setelah pengecekan
+       pertama pada candle yang sama, itu tetap tertangkap lewat live check di
+       atas, bukan malah dianggap "sudah pernah dicek" dan dilewati selamanya.
+    """
     wallet = state[mode]
     if not wallet.get("positions"):
         wallet["last_checked"] = datetime.now().isoformat()
@@ -1261,44 +1268,77 @@ def reconcile_wallet_positions(state: Dict[str, Any], mode: str, client: Any = N
     for pos in list(wallet["positions"]):
         exit_price = None
         exit_reason = None
-        try:
-            since_raw = pos.get("last_checked") or pos.get("entry_time")
-            since_dt = datetime.fromisoformat(since_raw) if since_raw else None
-        except Exception:
-            since_dt = None
 
-        tf = pos.get("timeframe") or "5m"
+        # --- 1) LIVE PRICE CHECK (fast path, real-time) ---
         try:
-            df = get_ohlcv(pos["exchange"], pos["symbol"], tf, limit=WALLET_OHLCV_LIMIT)
+            live = get_live_data(pos["exchange"], pos["symbol"])
+            live_price = live.get("price") or 0.0
         except Exception:
-            df = pd.DataFrame()
+            live_price = 0.0
 
-        if not df.empty:
-            recent = df[df["date"] > since_dt] if since_dt is not None else df
-            for _, candle in recent.iterrows():
-                hi, lo = float(candle["high"]), float(candle["low"])
-                if pos["direction"] == "LONG":
-                    if pos.get("liq_price") and lo <= pos["liq_price"]:
-                        exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
-                    if pos.get("sl") and lo <= pos["sl"]:
-                        exit_price, exit_reason = pos["sl"], "SL Hit"; break
-                    if pos.get("tp2") and hi >= pos["tp2"]:
-                        exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
-                    if pos.get("tp1") and hi >= pos["tp1"]:
-                        exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
-                else:
-                    if pos.get("liq_price") and hi >= pos["liq_price"]:
-                        exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
-                    if pos.get("sl") and hi >= pos["sl"]:
-                        exit_price, exit_reason = pos["sl"], "SL Hit"; break
-                    if pos.get("tp2") and lo <= pos["tp2"]:
-                        exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
-                    if pos.get("tp1") and lo <= pos["tp1"]:
-                        exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
+        if live_price:
+            if pos["direction"] == "LONG":
+                if pos.get("liq_price") and live_price <= pos["liq_price"]:
+                    exit_price, exit_reason = live_price, "Liquidation"
+                elif pos.get("sl") and live_price <= pos["sl"]:
+                    exit_price, exit_reason = live_price, "SL Hit"
+                elif pos.get("tp2") and live_price >= pos["tp2"]:
+                    exit_price, exit_reason = live_price, "TP2 Hit"
+                elif pos.get("tp1") and live_price >= pos["tp1"]:
+                    exit_price, exit_reason = live_price, "TP1 Hit"
+            else:
+                if pos.get("liq_price") and live_price >= pos["liq_price"]:
+                    exit_price, exit_reason = live_price, "Liquidation"
+                elif pos.get("sl") and live_price >= pos["sl"]:
+                    exit_price, exit_reason = live_price, "SL Hit"
+                elif pos.get("tp2") and live_price <= pos["tp2"]:
+                    exit_price, exit_reason = live_price, "TP2 Hit"
+                elif pos.get("tp1") and live_price <= pos["tp1"]:
+                    exit_price, exit_reason = live_price, "TP1 Hit"
+
+        # --- 2) CATCH-UP candle historis yang SUDAH TUTUP (untuk saat offline) ---
+        if exit_price is None:
+            try:
+                since_raw = pos.get("last_checked") or pos.get("entry_time")
+                since_dt = datetime.fromisoformat(since_raw) if since_raw else None
+            except Exception:
+                since_dt = None
+
+            tf = pos.get("timeframe") or "5m"
+            try:
+                df = get_ohlcv(pos["exchange"], pos["symbol"], tf, limit=WALLET_OHLCV_LIMIT)
+            except Exception:
+                df = pd.DataFrame()
+
+            if not df.empty and len(df) > 1:
+                closed_df = df.iloc[:-1]  # buang candle terakhir yang masih berjalan
+                recent = closed_df[closed_df["date"] > since_dt] if since_dt is not None else closed_df
+                for _, candle in recent.iterrows():
+                    hi, lo = float(candle["high"]), float(candle["low"])
+                    if pos["direction"] == "LONG":
+                        if pos.get("liq_price") and lo <= pos["liq_price"]:
+                            exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
+                        if pos.get("sl") and lo <= pos["sl"]:
+                            exit_price, exit_reason = pos["sl"], "SL Hit"; break
+                        if pos.get("tp2") and hi >= pos["tp2"]:
+                            exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
+                        if pos.get("tp1") and hi >= pos["tp1"]:
+                            exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
+                    else:
+                        if pos.get("liq_price") and hi >= pos["liq_price"]:
+                            exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
+                        if pos.get("sl") and hi >= pos["sl"]:
+                            exit_price, exit_reason = pos["sl"], "SL Hit"; break
+                        if pos.get("tp2") and lo <= pos["tp2"]:
+                            exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
+                        if pos.get("tp1") and lo <= pos["tp1"]:
+                            exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
+                if exit_price is None and not closed_df.empty:
+                    pos["last_checked"] = closed_df["date"].iloc[-1].isoformat()
 
         if exit_price is not None:
             if mode == "real" and client is None:
-                pos["_offline_alert"] = f"Harga historis sempat menyentuh {exit_reason} (~{exit_price}). Cek posisi ini langsung di exchange."
+                pos["_offline_alert"] = f"Harga menyentuh {exit_reason} (~{exit_price}). Cek posisi ini langsung di exchange."
                 still_open.append(pos)
                 continue
             trade = close_position(state, mode, pos["id"], exit_price, exit_reason, client)
@@ -1306,7 +1346,6 @@ def reconcile_wallet_positions(state: Dict[str, Any], mode: str, client: Any = N
                 closed.append(trade)
             continue
 
-        pos["last_checked"] = datetime.now().isoformat()
         pos.pop("_offline_alert", None)
         still_open.append(pos)
 
@@ -1444,10 +1483,29 @@ def _default_auto_bot_cfg(exchange_name: str, symbol: str, timeframe: str) -> Di
         "enabled": False, "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
         "leverage": 10, "margin_pct": 10.0, "margin_usdt": 50.0,
         "tp_pct": 3.0, "sl_pct": 5.0,
-        "last_checked": datetime.now().isoformat(),
+        "max_sessions_per_day": 5, "trades_today": 0, "trades_date": datetime.now().strftime("%Y-%m-%d"),
+        "close_on_signal_reverse": True, "min_hold_candles": 2, "min_entry_score": 3.0,
+        "last_checked": None,
     }
 
+
 def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -> List[Dict[str, Any]]:
+    """Auto-Bot LONG/SHORT dengan tiga lapis:
+    1) Catch-up replay candle yang SUDAH TUTUP sejak terakhir dicek — menangani
+       saat app tertutup/offline. Tiap candle tertutup dicek: kalau ada posisi
+       terbuka, cek SL/TP/Liquidation DAN cek apakah sinyal sudah berbalik arah
+       (kalau ya, posisi ditutup lalu langsung dicoba buka posisi baru sesuai
+       arah sinyal terbaru pada candle yang sama — jadi bot 'berganti posisi
+       mengikuti sinyal chart', bukan cuma diam di satu posisi terus).
+    2) Live price check untuk posisi yang sedang terbuka — supaya SL/TP yang
+       baru kesentuh SETELAH candle terakhir diproses tetap terdeteksi seketika
+       tanpa menunggu candle berikutnya tutup.
+    3) Live signal check untuk entry BARU memakai harga & sinyal saat ini
+       (termasuk candle yang masih berjalan) — supaya bot langsung entry sesuai
+       apa yang tampil di chart sekarang, bukan menunggu candle berikutnya.
+    Dibatasi maksimum N sesi (posisi baru) per hari lewat 'max_sessions_per_day'
+    supaya bot tidak buka posisi berlebihan.
+    """
     wallet = state[mode]
     bot_cfg = wallet.get("auto_bot")
     if not bot_cfg or not bot_cfg.get("enabled"):
@@ -1457,16 +1515,33 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
     symbol = bot_cfg["symbol"]
     timeframe = bot_cfg["timeframe"]
 
-    try:
-        since_dt = datetime.fromisoformat(bot_cfg.get("last_checked")) if bot_cfg.get("last_checked") else None
-    except Exception:
-        since_dt = None
+    today_key = datetime.now().strftime("%Y-%m-%d")
+    if bot_cfg.get("trades_date") != today_key:
+        bot_cfg["trades_date"] = today_key
+        bot_cfg["trades_today"] = 0
+    max_per_day = int(bot_cfg.get("max_sessions_per_day", 5))
+    close_on_reverse = bot_cfg.get("close_on_signal_reverse", True)
+    min_entry_score = float(bot_cfg.get("min_entry_score", 3.0))
+    min_hold_seconds = int(bot_cfg.get("min_hold_candles", 2)) * TIMEFRAME_SECONDS.get(timeframe, 900)
+
+    def _held_long_enough(entry_time_iso: Optional[str], now_dt: datetime) -> bool:
+        """Cegah posisi ditutup-buka-tutup terlalu cepat gara-gara sinyal mentah
+        (tanpa MTF) yang berosilasi di sekitar ambang ±3.0 antar candle. SL/TP/
+        Liquidation TIDAK terpengaruh cooldown ini — itu tetap dieksekusi
+        seketika demi keamanan modal."""
+        if not entry_time_iso:
+            return True
+        try:
+            entry_dt = datetime.fromisoformat(entry_time_iso)
+        except Exception:
+            return True
+        return (now_dt - entry_dt).total_seconds() >= min_hold_seconds
 
     try:
         df = get_ohlcv(exchange_name, symbol, timeframe, limit=AUTO_BOT_MAX_CANDLES)
     except Exception:
         df = pd.DataFrame()
-    if df.empty or len(df) < 60:
+    if df.empty or len(df) < 61:
         return []
     df = add_indicators(df)
 
@@ -1474,114 +1549,175 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
     open_pos = next((p for p in wallet["positions"]
                       if p.get("source") == "auto-bot" and p["symbol"] == symbol), None)
 
-    start_idx = 60
-    if since_dt is not None:
-        mask = df["date"] > since_dt
-        if mask.any():
-            start_idx = max(60, int(np.argmax(mask.values)))
+    def _sl_tp(direction: str, price: float) -> Tuple[float, float]:
+        if direction == "LONG":
+            return price * (1 - bot_cfg["sl_pct"] / 100), price * (1 + bot_cfg["tp_pct"] / 100)
+        return price * (1 + bot_cfg["sl_pct"] / 100), price * (1 - bot_cfg["tp_pct"] / 100)
+
+    def _try_open(direction: str, price: float, entry_time_iso: str, day_key: str) -> None:
+        nonlocal open_pos
+        if day_key == today_key and bot_cfg.get("trades_today", 0) >= max_per_day:
+            return
+        sl, tp = _sl_tp(direction, price)
+
+        if mode == "demo":
+            available = wallet["balance"] - wallet_used_margin(wallet)
+            margin_usdt = max(available, 0) * bot_cfg["margin_pct"] / 100
+            if margin_usdt <= 1:
+                return
+            pos, _err = open_position(state, "demo", exchange_name, symbol, timeframe, direction,
+                                       price, bot_cfg["leverage"], margin_usdt, sl, tp, tp, source="auto-bot")
+            if not pos:
+                return
+            pos["entry_time"] = entry_time_iso
+            pos["last_checked"] = entry_time_iso
+            save_wallet_state(state)
+            open_pos = pos
         else:
-            start_idx = len(df)
+            if client is None:
+                return
+            margin_usdt = bot_cfg["margin_usdt"]
+            notional = margin_usdt * bot_cfg["leverage"]
+            try_set_leverage(client, symbol, bot_cfg["leverage"])
+            amount = _amount_for_notional(client, symbol, notional, price)
+            if amount <= 0:
+                return
+            side = "buy" if direction == "LONG" else "sell"
+            try:
+                order = client.create_order(symbol, "market", side, amount)
+                filled_price = float(order.get("average") or order.get("price") or price)
+                filled_amount = float(order.get("filled") or amount)
+            except Exception:
+                return
+            pos = {
+                "id": str(uuid.uuid4())[:8], "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
+                "direction": direction, "entry_price": filled_price, "qty": filled_amount,
+                "leverage": int(bot_cfg["leverage"]), "margin": float(margin_usdt),
+                "notional": filled_amount * filled_price,
+                "sl": float(sl), "tp1": float(tp), "tp2": float(tp),
+                "liq_price": _calc_liq_price(direction, filled_price, bot_cfg["leverage"]),
+                "entry_time": entry_time_iso, "last_checked": entry_time_iso,
+                "source": "auto-bot", "status": "OPEN",
+            }
+            try_place_native_protection(client, exchange_name, symbol, direction, filled_amount, sl, tp)
+            wallet["positions"].append(pos)
+            save_wallet_state(state)
+            open_pos = pos
 
-    last_processed_time = bot_cfg.get("last_checked")
+        if day_key == today_key:
+            bot_cfg["trades_today"] = bot_cfg.get("trades_today", 0) + 1
+        events.append({"opened": True, "symbol": symbol, "direction": direction,
+                        "entry_price": open_pos["entry_price"], "pnl_usdt": 0.0, "exit_reason": "Auto-Bot Open"})
 
-    for i in range(start_idx, len(df)):
-        row = df.iloc[i]
-        row_time = row["date"]
-        hi, lo, close_price = float(row["high"]), float(row["low"]), float(row["close"])
+    def _try_close(exit_price: float, exit_reason: str) -> None:
+        nonlocal open_pos
+        if open_pos is None:
+            return
+        if mode == "real" and client is None:
+            open_pos["_offline_alert"] = f"Auto-Bot: {exit_reason} (~{exit_price}). Cek posisi ini di exchange."
+            return
+        trade = close_position(state, mode, open_pos["id"], exit_price, exit_reason, client)
+        if trade:
+            events.append(trade)
+        open_pos = None
 
-        if open_pos is not None:
-            exit_price = None
-            exit_reason = None
-            if open_pos["direction"] == "LONG":
-                if open_pos.get("liq_price") and lo <= open_pos["liq_price"]:
-                    exit_price, exit_reason = open_pos["liq_price"], "Liquidation"
-                elif open_pos.get("sl") and lo <= open_pos["sl"]:
-                    exit_price, exit_reason = open_pos["sl"], "SL Hit"
-                elif open_pos.get("tp1") and hi >= open_pos["tp1"]:
-                    exit_price, exit_reason = open_pos["tp1"], "TP Hit"
+    # ============ 1) CATCH-UP: replay candle yang SUDAH TUTUP ============
+    closed_df = df.iloc[:-1]
+    try:
+        since_dt = datetime.fromisoformat(bot_cfg.get("last_checked")) if bot_cfg.get("last_checked") else None
+    except Exception:
+        since_dt = None
+
+    if not closed_df.empty:
+        start_idx = 60
+        if since_dt is not None:
+            mask = closed_df["date"] > since_dt
+            if mask.any():
+                start_idx = max(60, int(np.argmax(mask.values)))
             else:
-                if open_pos.get("liq_price") and hi >= open_pos["liq_price"]:
-                    exit_price, exit_reason = open_pos["liq_price"], "Liquidation"
-                elif open_pos.get("sl") and hi >= open_pos["sl"]:
-                    exit_price, exit_reason = open_pos["sl"], "SL Hit"
-                elif open_pos.get("tp1") and lo <= open_pos["tp1"]:
-                    exit_price, exit_reason = open_pos["tp1"], "TP Hit"
+                start_idx = len(closed_df)
 
-            if exit_price is not None:
-                if mode == "real" and client is None:
-                    open_pos["_offline_alert"] = (
-                        f"Auto-Bot: histori menyentuh {exit_reason} (~{exit_price}). Cek posisi ini di exchange."
-                    )
+        for i in range(start_idx, len(closed_df)):
+            row = closed_df.iloc[i]
+            row_time = row["date"]
+            row_idx = row.name  # posisi asli di df penuh (termasuk candle berjalan)
+            hi, lo, close_price = float(row["high"]), float(row["low"]), float(row["close"])
+            day_key = row_time.strftime("%Y-%m-%d")
+
+            sub_df = df.iloc[: row_idx + 1]
+            sig = analyze_single_timeframe(sub_df)
+
+            if open_pos is not None:
+                exit_price = None
+                exit_reason = None
+                held_ok = _held_long_enough(open_pos.get("entry_time"), row_time)
+                if open_pos["direction"] == "LONG":
+                    if open_pos.get("liq_price") and lo <= open_pos["liq_price"]:
+                        exit_price, exit_reason = open_pos["liq_price"], "Liquidation"
+                    elif open_pos.get("sl") and lo <= open_pos["sl"]:
+                        exit_price, exit_reason = open_pos["sl"], "SL Hit"
+                    elif open_pos.get("tp1") and hi >= open_pos["tp1"]:
+                        exit_price, exit_reason = open_pos["tp1"], "TP Hit"
+                    elif close_on_reverse and held_ok and sig.direction == "SELL":
+                        exit_price, exit_reason = close_price, "Signal Reversed"
                 else:
-                    trade = close_position(state, mode, open_pos["id"], exit_price, f"Auto-Bot {exit_reason}", client)
-                    if trade:
-                        events.append(trade)
-                    open_pos = None
-            last_processed_time = row_time.isoformat()
-            continue
+                    if open_pos.get("liq_price") and hi >= open_pos["liq_price"]:
+                        exit_price, exit_reason = open_pos["liq_price"], "Liquidation"
+                    elif open_pos.get("sl") and hi >= open_pos["sl"]:
+                        exit_price, exit_reason = open_pos["sl"], "SL Hit"
+                    elif open_pos.get("tp1") and lo <= open_pos["tp1"]:
+                        exit_price, exit_reason = open_pos["tp1"], "TP Hit"
+                    elif close_on_reverse and held_ok and sig.direction == "BUY":
+                        exit_price, exit_reason = close_price, "Signal Reversed"
 
-        sub_df = df.iloc[: i + 1]
-        sig = analyze_single_timeframe(sub_df)
-        if sig.direction in ("BUY", "SELL"):
-            direction = "LONG" if sig.direction == "BUY" else "SHORT"
+                if exit_price is not None:
+                    _try_close(exit_price, f"Auto-Bot {exit_reason}")
 
-            if direction == "LONG":
-                sl = close_price * (1 - bot_cfg["sl_pct"] / 100)
-                tp = close_price * (1 + bot_cfg["tp_pct"] / 100)
-            else:
-                sl = close_price * (1 + bot_cfg["sl_pct"] / 100)
-                tp = close_price * (1 - bot_cfg["tp_pct"] / 100)
+            if open_pos is None and sig.direction in ("BUY", "SELL") and abs(sig.score) >= min_entry_score:
+                direction = "LONG" if sig.direction == "BUY" else "SHORT"
+                _try_open(direction, close_price, row_time.isoformat(), day_key)
 
-            if mode == "demo":
-                available = wallet["balance"] - wallet_used_margin(wallet)
-                margin_usdt = max(available, 0) * bot_cfg["margin_pct"] / 100
-                if margin_usdt > 1:
-                    pos, err = open_position(state, "demo", exchange_name, symbol, timeframe, direction,
-                                              close_price, bot_cfg["leverage"], margin_usdt, sl, tp, tp,
-                                              source="auto-bot")
-                    if pos:
-                        pos["entry_time"] = row_time.isoformat()
-                        pos["last_checked"] = row_time.isoformat()
-                        save_wallet_state(state)
-                        open_pos = pos
-                        events.append({"opened": True, "symbol": symbol, "direction": direction,
-                                        "entry_price": close_price, "pnl_usdt": 0.0, "exit_reason": "Auto-Bot Open"})
-            else:
-                is_fresh = row_time >= (datetime.now() - pd.Timedelta(minutes=AUTO_BOT_REAL_FRESH_MINUTES))
-                if client is not None and is_fresh:
-                    margin_usdt = bot_cfg["margin_usdt"]
-                    notional = margin_usdt * bot_cfg["leverage"]
-                    try_set_leverage(client, symbol, bot_cfg["leverage"])
-                    amount = _amount_for_notional(client, symbol, notional, close_price)
-                    if amount > 0:
-                        side = "buy" if direction == "LONG" else "sell"
-                        try:
-                            order = client.create_order(symbol, "market", side, amount)
-                            filled_price = float(order.get("average") or order.get("price") or close_price)
-                            filled_amount = float(order.get("filled") or amount)
-                            pos = {
-                                "id": str(uuid.uuid4())[:8], "exchange": exchange_name, "symbol": symbol,
-                                "timeframe": timeframe, "direction": direction, "entry_price": filled_price,
-                                "qty": filled_amount, "leverage": int(bot_cfg["leverage"]),
-                                "margin": float(margin_usdt), "notional": filled_amount * filled_price,
-                                "sl": float(sl), "tp1": float(tp), "tp2": float(tp),
-                                "liq_price": _calc_liq_price(direction, filled_price, bot_cfg["leverage"]),
-                                "entry_time": row_time.isoformat(), "last_checked": row_time.isoformat(),
-                                "source": "auto-bot", "status": "OPEN",
-                            }
-                            try_place_native_protection(client, exchange_name, symbol, direction,
-                                                         filled_amount, sl, tp)
-                            wallet["positions"].append(pos)
-                            save_wallet_state(state)
-                            open_pos = pos
-                            events.append({"opened": True, "symbol": symbol, "direction": direction,
-                                            "entry_price": filled_price, "pnl_usdt": 0.0, "exit_reason": "Auto-Bot Open"})
-                        except Exception:
-                            pass
+            bot_cfg["last_checked"] = row_time.isoformat()
 
-        last_processed_time = row_time.isoformat()
+    # ============ 2) LIVE CHECK: harga & sinyal saat ini (real-time) ============
+    try:
+        live = get_live_data(exchange_name, symbol)
+        live_price = live.get("price") or 0.0
+    except Exception:
+        live_price = 0.0
 
-    bot_cfg["last_checked"] = last_processed_time or datetime.now().isoformat()
+    if open_pos is not None and live_price:
+        exit_price = None
+        exit_reason = None
+        if open_pos["direction"] == "LONG":
+            if open_pos.get("liq_price") and live_price <= open_pos["liq_price"]:
+                exit_price, exit_reason = live_price, "Liquidation (Live)"
+            elif open_pos.get("sl") and live_price <= open_pos["sl"]:
+                exit_price, exit_reason = live_price, "SL Hit (Live)"
+            elif open_pos.get("tp1") and live_price >= open_pos["tp1"]:
+                exit_price, exit_reason = live_price, "TP Hit (Live)"
+        else:
+            if open_pos.get("liq_price") and live_price >= open_pos["liq_price"]:
+                exit_price, exit_reason = live_price, "Liquidation (Live)"
+            elif open_pos.get("sl") and live_price >= open_pos["sl"]:
+                exit_price, exit_reason = live_price, "SL Hit (Live)"
+            elif open_pos.get("tp1") and live_price <= open_pos["tp1"]:
+                exit_price, exit_reason = live_price, "TP Hit (Live)"
+        if exit_price is not None:
+            _try_close(exit_price, f"Auto-Bot {exit_reason}")
+
+    if open_pos is not None and close_on_reverse and _held_long_enough(open_pos.get("entry_time"), datetime.now()):
+        live_sig = analyze_single_timeframe(df)
+        want_dir = "LONG" if live_sig.direction == "BUY" else ("SHORT" if live_sig.direction == "SELL" else None)
+        if want_dir is not None and want_dir != open_pos["direction"] and abs(live_sig.score) >= min_entry_score:
+            _try_close(live_price or open_pos["entry_price"], "Auto-Bot Signal Reversed (Live)")
+
+    if open_pos is None and live_price:
+        live_sig = analyze_single_timeframe(df)
+        if live_sig.direction in ("BUY", "SELL") and abs(live_sig.score) >= min_entry_score:
+            direction = "LONG" if live_sig.direction == "BUY" else "SHORT"
+            _try_open(direction, live_price, datetime.now().isoformat(), today_key)
+
     wallet["auto_bot"] = bot_cfg
     save_wallet_state(state)
     return events
@@ -2239,21 +2375,23 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
         st.caption(
             "Bot membuka posisi **LONG/SHORT otomatis** mengikuti sinyal analisa (EMA+RSI+MACD+Bollinger+"
             "Stochastic+Volume+ADX) pada coin & timeframe yang sedang aktif — tanpa perlu klik tombol manual. "
-            "Karena app tidak berjalan di background, saat kamu buka lagi halaman ini bot akan mengejar candle "
-            "historis sejak terakhir dicek untuk membuka/menutup posisi seolah berjalan terus (dibatasi "
-            f"maksimum {AUTO_BOT_MAX_CANDLES} candle terakhir). Auto-Bot tidak memakai konfirmasi MTF supaya "
-            "proses catch-up konsisten & ringan, dan hanya 1 posisi otomatis aktif per coin."
+            "Selain cek SL/TP, bot juga memantau **live price** tiap refresh (tidak menunggu candle tutup) dan "
+            "otomatis **menutup lalu membuka posisi baru** kalau sinyal berbalik arah, supaya posisi selalu "
+            "mengikuti chart terbaru. Karena app tidak berjalan di background, saat kamu buka lagi halaman ini "
+            f"bot akan mengejar candle historis (maks {AUTO_BOT_MAX_CANDLES} candle terakhir) untuk menyusulkan "
+            "apa yang seharusnya terjadi. Auto-Bot tidak memakai konfirmasi MTF supaya proses catch-up "
+            "konsisten & ringan, dan hanya 1 posisi otomatis aktif per coin."
         )
         if mode == "real":
             st.caption(
                 f"⚠️ Untuk Wallet Real, Auto-Bot hanya MEMBUKA posisi baru dari sinyal yang benar-benar baru "
                 f"(≤{AUTO_BOT_REAL_FRESH_MINUTES} menit terakhir) demi keamanan — tidak entry live di harga "
-                "masa lalu. Menutup posisi (SL/TP) tetap otomatis mengejar histori seperti biasa."
+                "masa lalu. Menutup posisi (SL/TP/sinyal berbalik) tetap otomatis mengejar histori seperti biasa."
             )
 
         # --- Timer / countdown: kapan bot akan mengevaluasi ulang sinyal ---
         secs_left = _seconds_until_next_candle(timeframe)
-        tc1, tc2, tc3 = st.columns(3)
+        tc1, tc2, tc3, tc4 = st.columns(4)
         tc1.metric("⏱️ Candle Berikutnya", _format_countdown(secs_left))
         last_checked_disp = "-"
         if existing_cfg and existing_cfg.get("last_checked"):
@@ -2263,10 +2401,89 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
                 last_checked_disp = "-"
         tc2.metric("🔎 Terakhir Dicek Bot", last_checked_disp)
         tc3.metric("🔄 Auto-Refresh", "aktif" if _fragment_decorator is not None else "manual")
+        sessions_today = (existing_cfg or {}).get("trades_today", 0) if (existing_cfg or {}).get("trades_date") == datetime.now().strftime("%Y-%m-%d") else 0
+        tc4.metric("📅 Sesi Hari Ini", f"{sessions_today}/{int(bot_cfg.get('max_sessions_per_day', 5))}")
         st.caption(
-            "Bot mengevaluasi ulang sinyal setiap kali halaman ini refresh DAN ada candle baru yang terbentuk "
-            "(timer di atas menghitung mundur ke penutupan candle berikutnya pada timeframe yang aktif)."
+            "Bot mengevaluasi ulang sinyal setiap kali halaman ini refresh (harga live dicek tiap saat, sinyal "
+            "berubah tiap candle baru terbentuk — timer di atas menghitung mundur ke penutupan candle berikutnya)."
         )
+
+        # --- Diagnostik: kenapa bot entry / tidak entry SAAT INI ---
+        if existing_cfg and existing_cfg.get("enabled"):
+            with st.container(border=True):
+                st.markdown("**🔍 Diagnostik Auto-Bot (kondisi saat ini)**")
+                bot_symbol = existing_cfg.get("symbol")
+                bot_tf = existing_cfg.get("timeframe")
+                bot_exch = existing_cfg.get("exchange")
+                if bot_symbol != symbol or bot_tf != timeframe or bot_exch != exchange_name:
+                    st.warning(
+                        f"⚠️ Bot ini SEDANG AKTIF di **{bot_symbol} · {bot_tf} · {bot_exch}** — BUKAN di coin/"
+                        f"timeframe yang sekarang kamu lihat ({symbol} · {timeframe} · {exchange_name}). "
+                        "Sinyal BUY yang kamu lihat di layar bisa jadi untuk coin yang berbeda dari yang "
+                        "dipantau bot. Klik Simpan Pengaturan Auto-Bot untuk memindahkan bot ke coin ini."
+                    )
+                else:
+                    existing_auto_pos = next((p for p in wallet.get("positions", [])
+                                               if p.get("source") == "auto-bot" and p["symbol"] == bot_symbol), None)
+                    if existing_auto_pos:
+                        st.info(
+                            f"ℹ️ Bot sedang MEMEGANG posisi {existing_auto_pos['direction']} di {bot_symbol} "
+                            "(lihat kartu Posisi Terbuka di bawah) — makanya tidak entry baru. Bot hanya "
+                            "membuka 1 posisi otomatis per coin sampai posisi ini ditutup (SL/TP/sinyal berbalik)."
+                        )
+                    else:
+                        try:
+                            _diag_df = get_ohlcv(bot_exch, bot_symbol, bot_tf, limit=WALLET_OHLCV_LIMIT)
+                            if not _diag_df.empty and len(_diag_df) >= 61:
+                                _diag_sig = analyze_single_timeframe(add_indicators(_diag_df))
+                                score_now = _diag_sig.score
+                                thr = float(existing_cfg.get("min_entry_score", 3.0))
+                                dc1, dc2, dc3 = st.columns(3)
+                                dc1.metric("Sinyal Saat Ini", _diag_sig.direction)
+                                dc2.metric("Skor", f"{score_now:+.1f}")
+                                dc3.metric("Ambang Minimum", f"±{thr:.1f}")
+                                if _diag_sig.direction == "HOLD":
+                                    st.caption("⏸️ Sinyal masih HOLD (skor belum mencapai ±3.0) — bot menunggu.")
+                                elif abs(score_now) < thr:
+                                    st.caption(
+                                        f"⏸️ Sinyal {_diag_sig.direction} tapi skornya ({score_now:+.1f}) belum "
+                                        f"mencapai ambang minimum entry (±{thr:.1f}) yang kamu atur — bot menunggu "
+                                        "sinyal yang lebih kuat. Turunkan 'Minimum Skor Sinyal untuk Entry' kalau "
+                                        "mau bot lebih agresif."
+                                    )
+                                elif mode == "demo":
+                                    _avail = wallet["balance"] - wallet_used_margin(wallet)
+                                    _need = max(_avail, 0) * existing_cfg.get("margin_pct", 10) / 100
+                                    if _need <= 1:
+                                        st.error(
+                                            f"⚠️ Sinyal {_diag_sig.direction} sudah memenuhi ambang, tapi margin "
+                                            f"yang bisa dipakai terlalu kecil (saldo tersedia ${_avail:,.2f} × "
+                                            f"{existing_cfg.get('margin_pct',10)}%). Tambah saldo demo atau "
+                                            "kurangi posisi lain yang masih terbuka."
+                                        )
+                                    elif sessions_today >= int(existing_cfg.get("max_sessions_per_day", 5)):
+                                        st.error(
+                                            "⚠️ Sinyal sudah memenuhi ambang, tapi limit sesi trading hari ini "
+                                            f"({sessions_today}/{existing_cfg.get('max_sessions_per_day',5)}) "
+                                            "sudah tercapai. Bot akan entry lagi besok, atau naikkan 'Maks Sesi "
+                                            "Trading per Hari' di atas."
+                                        )
+                                    else:
+                                        st.success(
+                                            f"✅ Sinyal {_diag_sig.direction} memenuhi semua syarat — bot akan "
+                                            "entry di refresh berikutnya."
+                                        )
+                                else:
+                                    if client is None:
+                                        st.error("⚠️ Sinyal sudah memenuhi ambang, tapi wallet Real belum terhubung ke exchange.")
+                                    elif sessions_today >= int(existing_cfg.get("max_sessions_per_day", 5)):
+                                        st.error("⚠️ Sinyal sudah memenuhi ambang, tapi limit sesi trading hari ini sudah tercapai.")
+                                    else:
+                                        st.success(f"✅ Sinyal {_diag_sig.direction} memenuhi semua syarat — bot akan entry di refresh berikutnya.")
+                            else:
+                                st.caption("Data candle belum cukup untuk diagnostik.")
+                        except Exception as _diag_err:
+                            st.caption(f"Diagnostik gagal dihitung: {_diag_err}")
 
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -2300,6 +2517,42 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
             f"Posisi SHORT: TP di -{tp_pct:.1f}%, SL di +{sl_pct:.1f}% dari entry."
         )
 
+        min_entry_score = st.slider(
+            "🎯 Minimum Skor Sinyal untuk Entry", 3.0, 8.0,
+            float(bot_cfg.get("min_entry_score", 3.0)), 0.5, key=f"autobot_minscore_{mode}"
+        )
+        st.caption(
+            "Skor sinyal dasar mulai dianggap BUY/SELL di ±3.0 (sama dengan tab Analisa). Naikkan angka ini "
+            "kalau ingin bot hanya entry saat sinyalnya jauh lebih kuat/meyakinkan (lebih jarang entry, tapi "
+            "lebih selektif). Nilai 3.0 = sama persis dengan ambang default, tidak ada penyaringan tambahan."
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            max_sessions = st.slider("📅 Maks Sesi Trading per Hari", 1, 10,
+                                      int(bot_cfg.get("max_sessions_per_day", 5)), 1, key=f"autobot_maxsess_{mode}")
+        with c2:
+            close_on_reverse = st.checkbox(
+                "🔁 Tutup & buka ulang posisi otomatis kalau sinyal berbalik arah",
+                value=bot_cfg.get("close_on_signal_reverse", True), key=f"autobot_reverse_{mode}"
+            )
+        st.caption(
+            f"Bot maksimal membuka {max_sessions} posisi BARU per hari (posisi yang sedang berjalan tetap "
+            "dipantau meski limit tercapai). Cocok dipakai di timeframe 15m: tiap 'sesi' bisa berbeda arah "
+            "(LONG/SHORT) mengikuti perubahan sinyal chart, bukan cuma satu arah tetap seharian."
+        )
+
+        min_hold_candles = st.slider(
+            "🔒 Minimum Tahan Posisi (jumlah candle) sebelum boleh ditutup karena sinyal berbalik", 1, 10,
+            int(bot_cfg.get("min_hold_candles", 2)), 1, key=f"autobot_minhold_{mode}"
+        )
+        st.caption(
+            f"= minimal {min_hold_candles} × {timeframe} sejak posisi dibuka. Ini mencegah bot "
+            "buka-tutup-buka terlalu cepat gara-gara sinyal mentah yang sedikit goyang di sekitar ambang "
+            "BUY/SELL (Auto-Bot tidak memakai MTF, jadi lebih sensitif dari sinyal di chart utama). SL/TP/"
+            "Liquidation TETAP langsung dieksekusi tanpa jeda ini — proteksi modal tidak pernah ditunda."
+        )
+
         confirm_real_bot = True
         if mode == "real":
             confirm_real_bot = st.checkbox(
@@ -2313,12 +2566,18 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
             # coin/timeframe/exchange berubah) — supaya sinyal yang SUDAH TAMPIL di layar saat ini langsung
             # dievaluasi bot, bukan dianggap "sudah pernah dicek" dan malah dilewati.
             fresh_activation = enabled and (not was_enabled or not was_same_target)
-            new_last_checked = None if fresh_activation else (bot_cfg.get("last_checked") or datetime.now().isoformat())
+            new_last_checked = None if fresh_activation else bot_cfg.get("last_checked")
+            today_key_now = datetime.now().strftime("%Y-%m-%d")
+            prev_trades_today = 0 if fresh_activation else bot_cfg.get("trades_today", 0)
+            prev_trades_date = today_key_now if fresh_activation else (bot_cfg.get("trades_date") or today_key_now)
 
             new_cfg = {
                 "enabled": enabled, "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
                 "leverage": int(leverage), "margin_pct": float(margin_pct), "margin_usdt": float(margin_usdt),
                 "tp_pct": float(tp_pct), "sl_pct": float(sl_pct),
+                "max_sessions_per_day": int(max_sessions), "close_on_signal_reverse": bool(close_on_reverse),
+                "min_hold_candles": int(min_hold_candles), "min_entry_score": float(min_entry_score),
+                "trades_today": prev_trades_today, "trades_date": prev_trades_date,
                 "last_checked": new_last_checked,
             }
             wallet["auto_bot"] = new_cfg
