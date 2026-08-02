@@ -20,6 +20,12 @@ A Streamlit-based dashboard for monitoring Gate.io futures markets and simulatin
 streamlit run app.py --server.address 0.0.0.0
 ```
 
+Atau jalankan file utama langsung:
+
+```bash
+streamlit run real.py --server.address 0.0.0.0
+```
+
 ## Deploy online
 
 This app is ready for Streamlit Cloud:
@@ -27,7 +33,7 @@ This app is ready for Streamlit Cloud:
 1. Push the project to GitHub.
 2. Open Streamlit Cloud.
 3. Create a new app from the repository.
-4. Set the main file to `app.py`.
+4. Set the main file to `app.py` (atau `real.py` jika ingin memakai file utama langsung).
 5. Deploy.
 
 ## Notes

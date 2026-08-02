@@ -72,6 +72,7 @@ _BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 TRADE_HISTORY_DIR: str = os.path.join(_BASE_DIR, "airise_data")
 TRADE_HISTORY_FILE: str = os.path.join(TRADE_HISTORY_DIR, "trade_history.json")
 WALLET_STATE_FILE: str = os.path.join(TRADE_HISTORY_DIR, "wallet_state.json")
+SESSION_FILE: str = os.path.join(TRADE_HISTORY_DIR, "session.json")
 MAX_HISTORY_RECORDS: int = 3000
 DEMO_DEFAULT_BALANCE: float = 10000.0
 MAINTENANCE_MARGIN_RATE: float = 0.005
@@ -79,52 +80,90 @@ MAINTENANCE_MARGIN_RATE: float = 0.005
 # =============================================================================
 # LOGO
 # =============================================================================
-LOGO_FILENAME: str = "airise_logo.png"
-LOGO_CANDIDATE_PATHS: List[str] = [
-    os.path.join(_BASE_DIR, "assets", LOGO_FILENAME),
-    os.path.join(_BASE_DIR, LOGO_FILENAME),
-    os.path.join(os.getcwd(), "assets", LOGO_FILENAME),
-    os.path.join(os.getcwd(), LOGO_FILENAME),
-]
-
-_FALLBACK_ROBOT_SVG: str = """
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" style="height:{h}px;width:auto;display:block;{extra}">
-  <defs>
-    <linearGradient id="airiseGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#2979ff"/>
-      <stop offset="100%" stop-color="#00e5ff"/>
-    </linearGradient>
-  </defs>
-  <rect x="14" y="22" width="36" height="28" rx="8" fill="url(#airiseGrad)" opacity="0.18" stroke="url(#airiseGrad)" stroke-width="2.5"/>
-  <circle cx="25" cy="36" r="4.2" fill="#00e5ff"/>
-  <circle cx="39" cy="36" r="4.2" fill="#2979ff"/>
-  <rect x="27" y="44" width="10" height="3" rx="1.5" fill="#6fa8dc"/>
-  <line x1="32" y1="22" x2="32" y2="12" stroke="url(#airiseGrad)" stroke-width="2.5" stroke-linecap="round"/>
-  <circle cx="32" cy="9" r="3.2" fill="#00e5ff"/>
-  <rect x="8" y="30" width="6" height="12" rx="3" fill="#2979ff" opacity="0.7"/>
-  <rect x="50" y="30" width="6" height="12" rx="3" fill="#00e5ff" opacity="0.7"/>
-</svg>
-"""
-
-@st.cache_data(show_spinner=False)
-def _load_logo_base64() -> Optional[str]:
-    for path in LOGO_CANDIDATE_PATHS:
-        try:
-            with open(path, "rb") as f:
-                return base64.b64encode(f.read()).decode("utf-8")
-        except Exception:
-            continue
-    return None
-
 def render_logo_img(height_px: int = 64, extra_style: str = "") -> str:
-    b64 = _load_logo_base64()
-    if not b64:
-        return _FALLBACK_ROBOT_SVG.format(h=height_px, extra=extra_style)
-    return (f'<img src="data:image/png;base64,{b64}" '
-            f'style="height:{height_px}px; width:auto; display:block; {extra_style}" alt="AIRISE logo" />')
+    return f"""
+    <div style="display: flex; justify-content: center; align-items: center; width: {height_px}px; height: {height_px}px; min-width: {height_px}px; min-height: {height_px}px; background: rgba(255,255,255,0.06); border-radius: 18px; padding: 6px; {extra_style}">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="{height_px - 12}" height="{height_px - 12}">
+            <defs>
+                <filter id="icon-glow" x="-30%" y="-30%" width="160%" height="160%">
+                    <feGaussianBlur stdDeviation="3" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+            </defs>
+            <rect x="35" y="40" width="130" height="110" rx="24" fill="#0f172a" stroke="#4a5568" stroke-width="4" />
+            <rect x="55" y="70" width="90" height="38" rx="10" fill="#08111b" stroke="#2d3748" stroke-width="2" />
+            <ellipse cx="75" cy="89" rx="10" ry="10" fill="#00ffcc" filter="url(#icon-glow)" />
+            <ellipse cx="125" cy="89" rx="10" ry="10" fill="#00ffcc" filter="url(#icon-glow)" />
+            <rect x="75" y="120" width="10" height="12" rx="2" fill="#4a5568" />
+            <rect x="87" y="120" width="10" height="16" rx="2" fill="#4a5568" />
+        </svg>
+    </div>
+    """
 
-def logo_file_found() -> bool:
-    return _load_logo_base64() is not None
+def get_robot_logo_html() -> str:
+    """Menghasilkan kode SVG interaktif dengan animasi CSS untuk logo web."""
+    return """
+    <div style="display: flex; justify-content: center; align-items: center; padding: 20px; background: #0d1117; border-radius: 12px; max-width: 250px; margin: auto;">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="100%" height="100%">
+            <defs>
+                <!-- Efek Glow / Neon untuk Mata -->
+                <filter id="neon-glow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feGaussianBlur stdDeviation="4" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+                
+                <!-- Animasi Mata Berkedip & Menyala -->
+                <style>
+                    @keyframes blink {
+                        0%, 90%, 100% { transform: scaleY(1); }
+                        95% { transform: scaleY(0.1); }
+                    }
+                    @keyframes pulse {
+                        0%, 100% { opacity: 0.8; }
+                        50% { opacity: 1; filter: drop-shadow(0 0 8px #00ffcc); }
+                    }
+                    .robot-eye {
+                        transform-origin: center;
+                        animation: blink 4s infinite ease-in-out;
+                    }
+                    .neon-part {
+                        animation: pulse 2s infinite ease-in-out;
+                    }
+                </style>
+            </defs>
+
+            <!-- 1. Antena / Sensor Atas -->
+            <rect x="95" y="15" width="10" height="25" rx="5" fill="#4a5568" />
+            <circle cx="100" cy="15" r="8" fill="#00ffcc" class="neon-part" filter="url(#neon-glow)" />
+
+            <!-- 2. Telinga / Samping Kepala -->
+            <rect x="25" y="75" width="15" height="50" rx="6" fill="#2d3748" />
+            <rect x="160" y="75" width="15" height="50" rx="6" fill="#2d3748" />
+
+            <!-- 3. Struktur Utama Kepala -->
+            <rect x="35" y="40" width="130" height="120" rx="28" fill="#1a202c" stroke="#4a5568" stroke-width="4" />
+            
+            <!-- Plat Dahi (Aksen Desain) -->
+            <path d="M 60 40 L 140 40 L 130 65 L 70 65 Z" fill="#2d3748" />
+
+            <!-- 4. Area Mata (Screen) -->
+            <rect x="50" y="75" width="100" height="45" rx="12" fill="#0f172a" stroke="#2d3748" stroke-width="2" />
+
+            <!-- 5. Mata Robot (Animasi) -->
+            <ellipse class="robot-eye" cx="75" cy="97" rx="10" ry="10" fill="#00ffcc" filter="url(#neon-glow)" />
+            <ellipse class="robot-eye" cx="125" cy="97" rx="10" ry="10" fill="#00ffcc" filter="url(#neon-glow)" />
+
+            <!-- 6. Komponen Mulut / Kisi Udara -->
+            <g fill="#4a5568">
+                <rect x="75" y="135" width="6" height="12" rx="2" />
+                <rect x="87" y="135" width="6" height="16" rx="2" />
+                <rect x="99" y="135" width="6" height="16" rx="2" />
+                <rect x="111" y="135" width="6" height="16" rx="2" />
+                <rect x="123" y="135" width="6" height="12" rx="2" />
+            </g>
+        </svg>
+    </div>
+    """
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -244,24 +283,56 @@ def _resolve_ccxt_class(candidate_ids: List[str]) -> Any:
 def get_exchange(exchange_name: str) -> Any:
     cfg = EXCHANGES.get(exchange_name, next(iter(EXCHANGES.values())))
     exchange_class = _resolve_ccxt_class(cfg["id"])
-    return exchange_class({"enableRateLimit": True, "options": cfg["options"]})
+    config = {"enableRateLimit": True, "options": cfg["options"]}
+    if exchange_name.upper() == "OKX":
+        config["verify"] = False
+    return exchange_class(config)
+
+def is_blocked_exchange_response(exchange: Any) -> bool:
+    body = getattr(exchange, "last_http_response", None)
+    if not isinstance(body, str):
+        return False
+    return "Internet Positif" in body or "myim3app.indosatooredoo.com" in body
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_symbols(exchange_name: str) -> List[str]:
     exchange = get_exchange(exchange_name)
-    markets = exchange.load_markets()
-    return sorted([
-        s for s, m in markets.items()
-        if (m.get("swap") or m.get("future")) and m.get("quote") == "USDT" and m.get("active", True)
-    ])
+    try:
+        markets = exchange.load_markets(reload=True)
+        if not markets:
+            raise RuntimeError("No markets loaded from exchange")
+        symbols = sorted([
+            s for s, m in markets.items()
+            if (m.get("swap") or m.get("future")) and m.get("quote") == "USDT" and m.get("active", True)
+        ])
+        return symbols if symbols else POPULAR_SYMBOLS
+    except Exception as e:
+        if is_blocked_exchange_response(exchange):
+            st.warning(
+                f"Akses {exchange_name} kemungkinan diblokir oleh provider (Internet Positif). "
+                "Data simbol OKX tidak tersedia. Gunakan VPN atau jaringan lain jika ingin mengakses OKX langsung."
+            )
+        else:
+            st.warning(f"Gagal memuat symbol exchange ({exchange_name}): {e}. Menggunakan daftar default.")
+        return POPULAR_SYMBOLS
 
 def resolve_symbol(target: str, all_symbols: List[str]) -> Optional[str]:
     if target in all_symbols:
         return target
     base = target.split("/")[0]
+    exact_candidates = []
+    fuzzy_candidates = []
     for s in all_symbols:
-        if s.startswith(f"{base}/USDT"):
+        if s == f"{base}/USDT":
             return s
+        if s.startswith(f"{base}/USDT") or s.startswith(f"{base}-USDT") or s.startswith(f"{base}/USDT:") or s.endswith(":USDT"):
+            exact_candidates.append(s)
+        elif base in s and "USDT" in s:
+            fuzzy_candidates.append(s)
+    if exact_candidates:
+        return exact_candidates[0]
+    if fuzzy_candidates:
+        return fuzzy_candidates[0]
     return None
 
 # Semua pemanggil get_ohlcv() untuk keperluan Wallet Trading (form order, reconcile
@@ -281,10 +352,30 @@ def get_ohlcv(exchange_name: str, symbol: str, timeframe: str, limit: int = 300)
         return df
     except Exception as e:
         msg = str(e)
+        exchange = get_exchange(exchange_name)
+        if is_blocked_exchange_response(exchange):
+            st.error(
+                f"Akses {exchange_name} terdeteksi diblokir oleh provider. "
+                "Tidak dapat mengambil OHLCV. Coba gunakan VPN atau jaringan lain."
+            )
+            return pd.DataFrame()
+
+        fallback = None
+        all_symbols = get_symbols(exchange_name)
+        if all_symbols:
+            fallback = resolve_symbol(symbol, all_symbols)
+        if fallback and fallback != symbol:
+            try:
+                raw = exchange.fetch_ohlcv(fallback, timeframe=timeframe, limit=limit)
+                df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
+                return df
+            except Exception:
+                msg = str(e)
         if "TOO_MANY_REQUESTS" in msg or "Rate Limit" in msg or "rate limit" in msg:
             st.warning(
                 f"⏳ Rate limit exchange tercapai untuk {symbol} ({timeframe}) — data akan dicoba lagi otomatis "
-                "beberapa saat lagi. Kalau sering muncul, coba perbesar interval Auto-Refresh di sidebar/panel."
+                "beberapa saat lalu. Kalau sering muncul, coba perbesar interval Auto-Refresh di sidebar/panel."
             )
         else:
             st.error(f"Error mengambil data OHLCV: {e}")
@@ -1037,6 +1128,51 @@ def _ensure_history_dir() -> None:
     except Exception:
         pass
 
+
+def append_autobot_log(message: str) -> None:
+    """Append a timestamped line to an Auto-Bot diagnostic log file."""
+    _ensure_history_dir()
+    try:
+        path = os.path.join(TRADE_HISTORY_DIR, "autobot_log.txt")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {message}\n")
+    except Exception:
+        pass
+
+
+def save_session_to_disk() -> None:
+    """Persist serializable parts of st.session_state to disk for quick restore via button."""
+    _ensure_history_dir()
+    try:
+        sess = {}
+        for k, v in dict(st.session_state).items():
+            try:
+                # try JSON round-trip; fallback to string if not serializable
+                json.dumps(v)
+                sess[k] = v
+            except Exception:
+                try:
+                    sess[k] = str(v)
+                except Exception:
+                    continue
+        with open(SESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump(sess, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def load_session_from_disk() -> Dict[str, Any]:
+    _ensure_history_dir()
+    try:
+        if not os.path.exists(SESSION_FILE):
+            return {}
+        with open(SESSION_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
 def _serialize_trade(trade: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(trade)
     for k in ("entry_time", "exit_time"):
@@ -1075,8 +1211,8 @@ def append_trade_to_disk(trade: Dict[str, Any], context: Tuple[str, str, str], m
             history = history[-MAX_HISTORY_RECORDS:]
         with open(TRADE_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Gagal menyimpan riwayat trade: {e}")
 
 def trade_history_dataframe(history: List[Dict[str, Any]]) -> pd.DataFrame:
     if not history:
@@ -1190,6 +1326,8 @@ def open_position(state: Dict[str, Any], mode: str, exchange_name: str, symbol: 
                    direction: str, price: float, leverage: int, margin_usdt: float,
                    sl: float, tp1: float, tp2: float, source: str = "manual") -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     wallet = state[mode]
+    # available balance helper (demo): total balance minus margin already used by open demo positions
+    available = wallet.get("balance", 0.0) - wallet_used_margin(wallet)
     if mode == "demo":
         available = wallet["balance"] - wallet_used_margin(wallet)
         if margin_usdt <= 0:
@@ -1317,22 +1455,22 @@ def reconcile_wallet_positions(state: Dict[str, Any], mode: str, client: Any = N
                     hi, lo = float(candle["high"]), float(candle["low"])
                     if pos["direction"] == "LONG":
                         if pos.get("liq_price") and lo <= pos["liq_price"]:
-                            exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
-                        if pos.get("sl") and lo <= pos["sl"]:
-                            exit_price, exit_reason = pos["sl"], "SL Hit"; break
-                        if pos.get("tp2") and hi >= pos["tp2"]:
-                            exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
-                        if pos.get("tp1") and hi >= pos["tp1"]:
-                            exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
+                            exit_price, exit_reason = pos["liq_price"], "Liquidation"
+                        elif pos.get("sl") and lo <= pos["sl"]:
+                            exit_price, exit_reason = pos["sl"], "SL Hit"
+                        elif pos.get("tp2") and hi >= pos["tp2"]:
+                            exit_price, exit_reason = pos["tp2"], "TP2 Hit"
+                        elif pos.get("tp1") and hi >= pos["tp1"]:
+                            exit_price, exit_reason = pos["tp1"], "TP1 Hit"
                     else:
                         if pos.get("liq_price") and hi >= pos["liq_price"]:
-                            exit_price, exit_reason = pos["liq_price"], "Liquidation"; break
-                        if pos.get("sl") and hi >= pos["sl"]:
-                            exit_price, exit_reason = pos["sl"], "SL Hit"; break
-                        if pos.get("tp2") and lo <= pos["tp2"]:
-                            exit_price, exit_reason = pos["tp2"], "TP2 Hit"; break
-                        if pos.get("tp1") and lo <= pos["tp1"]:
-                            exit_price, exit_reason = pos["tp1"], "TP1 Hit"; break
+                            exit_price, exit_reason = pos["liq_price"], "Liquidation"
+                        elif pos.get("sl") and hi >= pos["sl"]:
+                            exit_price, exit_reason = pos["sl"], "SL Hit"
+                        elif pos.get("tp2") and lo <= pos["tp2"]:
+                            exit_price, exit_reason = pos["tp2"], "TP2 Hit"
+                        elif pos.get("tp1") and lo <= pos["tp1"]:
+                            exit_price, exit_reason = pos["tp1"], "TP1 Hit"
                 if exit_price is None and not closed_df.empty:
                     pos["last_checked"] = closed_df["date"].iloc[-1].isoformat()
 
@@ -1483,9 +1621,11 @@ def _default_auto_bot_cfg(exchange_name: str, symbol: str, timeframe: str) -> Di
         "enabled": False, "exchange": exchange_name, "symbol": symbol, "timeframe": timeframe,
         "leverage": 10, "margin_pct": 10.0, "margin_usdt": 50.0,
         "tp_pct": 3.0, "sl_pct": 5.0,
+        "risk_reward": 1.5, "max_risk_pct": 0.01, "atr_multiplier": 1.5,
         "max_sessions_per_day": 5, "trades_today": 0, "trades_date": datetime.now().strftime("%Y-%m-%d"),
         "close_on_signal_reverse": True, "min_hold_candles": 2, "min_entry_score": 3.0,
         "last_checked": None,
+        "use_mtf": False,
     }
 
 
@@ -1554,17 +1694,30 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
             return price * (1 - bot_cfg["sl_pct"] / 100), price * (1 + bot_cfg["tp_pct"] / 100)
         return price * (1 + bot_cfg["sl_pct"] / 100), price * (1 - bot_cfg["tp_pct"] / 100)
 
-    def _try_open(direction: str, price: float, entry_time_iso: str, day_key: str) -> None:
+    def _try_open(direction: str, price: float, entry_time_iso: str, day_key: str,
+                  override_sl: Optional[float] = None, override_tp: Optional[float] = None) -> None:
         nonlocal open_pos
         if day_key == today_key and bot_cfg.get("trades_today", 0) >= max_per_day:
             return
-        sl, tp = _sl_tp(direction, price)
+        sl, tp = (override_sl, override_tp) if (override_sl is not None or override_tp is not None) else _sl_tp(direction, price)
 
         if mode == "demo":
             available = wallet["balance"] - wallet_used_margin(wallet)
             margin_usdt = max(available, 0) * bot_cfg["margin_pct"] / 100
             if margin_usdt <= 1:
                 return
+            # risk-based sizing: cap margin so potential loss <= max_risk_pct * balance
+            try:
+                desired_risk_usdt = wallet.get("balance", 0.0) * float(bot_cfg.get("max_risk_pct", 0.01))
+                if sl is not None and price and price != sl:
+                    loss_per_notional = abs(price - sl)
+                    # margin * leverage * (1 - sl/price) ~= risk_usdt => margin_needed = desired_risk_usdt / (leverage * (1 - sl/price))
+                    denom = float(bot_cfg.get("leverage", 1)) * max(1e-9, (1.0 - float(sl) / float(price)))
+                    margin_needed = desired_risk_usdt / denom if denom > 0 else margin_usdt
+                    # use the smaller margin (user-specified vs computed) to respect risk cap
+                    margin_usdt = min(margin_usdt, max(1.0, margin_needed))
+            except Exception:
+                pass
             pos, _err = open_position(state, "demo", exchange_name, symbol, timeframe, direction,
                                        price, bot_cfg["leverage"], margin_usdt, sl, tp, tp, source="auto-bot")
             if not pos:
@@ -1576,7 +1729,30 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
         else:
             if client is None:
                 return
+            # For real wallet, require the signal to be recent to avoid opening historical entries
+            try:
+                if mode == "real" and entry_time_iso:
+                    entry_dt = datetime.fromisoformat(entry_time_iso)
+                    if (datetime.now() - entry_dt).total_seconds() > AUTO_BOT_REAL_FRESH_MINUTES * 60:
+                        # signal too old for live entry
+                        return
+            except Exception:
+                pass
             margin_usdt = bot_cfg["margin_usdt"]
+            # For real, also attempt to cap margin to respect max risk if configured
+            try:
+                bal = 0.0
+                try:
+                    bal = float(wallet.get("balance", 0.0))
+                except Exception:
+                    bal = 0.0
+                desired_risk_usdt = bal * float(bot_cfg.get("max_risk_pct", 0.01))
+                if sl is not None and price and price != sl:
+                    denom = float(bot_cfg.get("leverage", 1)) * max(1e-9, (1.0 - float(sl) / float(price)))
+                    margin_needed = desired_risk_usdt / denom if denom > 0 else margin_usdt
+                    margin_usdt = min(margin_usdt, max(1.0, margin_needed))
+            except Exception:
+                pass
             notional = margin_usdt * bot_cfg["leverage"]
             try_set_leverage(client, symbol, bot_cfg["leverage"])
             amount = _amount_for_notional(client, symbol, notional, price)
@@ -1608,6 +1784,12 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
             bot_cfg["trades_today"] = bot_cfg.get("trades_today", 0) + 1
         events.append({"opened": True, "symbol": symbol, "direction": direction,
                         "entry_price": open_pos["entry_price"], "pnl_usdt": 0.0, "exit_reason": "Auto-Bot Open"})
+        try:
+            append_autobot_log(
+                f"OPENED {mode.upper()} {direction} {symbol} entry={open_pos['entry_price']:.8f} qty={open_pos['qty']:.6f} lev={open_pos['leverage']} id={open_pos['id']}"
+            )
+        except Exception:
+            pass
 
     def _try_close(exit_price: float, exit_reason: str) -> None:
         nonlocal open_pos
@@ -1619,6 +1801,12 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
         trade = close_position(state, mode, open_pos["id"], exit_price, exit_reason, client)
         if trade:
             events.append(trade)
+            try:
+                append_autobot_log(
+                    f"CLOSED {mode.upper()} {trade.get('direction')} {trade.get('symbol_context') or trade.get('symbol')} exit={trade.get('exit_price'):.8f} pnl={trade.get('pnl_usdt'):+.2f} roi={trade.get('roi_pct'):+.2f}% id={trade.get('trade_uid') or trade.get('id')}"
+                )
+            except Exception:
+                pass
         open_pos = None
 
     # ============ 1) CATCH-UP: replay candle yang SUDAH TUTUP ============
@@ -1646,6 +1834,12 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
 
             sub_df = df.iloc[: row_idx + 1]
             sig = analyze_single_timeframe(sub_df)
+            # Apply MTF confirmation if configured for the auto-bot
+            try:
+                if bot_cfg.get("use_mtf"):
+                    sig = apply_mtf_confirmation(sig, exchange_name, symbol, timeframe, limit=min(200, WALLET_OHLCV_LIMIT))
+            except Exception:
+                pass
 
             if open_pos is not None:
                 exit_price = None
@@ -1674,8 +1868,31 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
                     _try_close(exit_price, f"Auto-Bot {exit_reason}")
 
             if open_pos is None and sig.direction in ("BUY", "SELL") and abs(sig.score) >= min_entry_score:
-                direction = "LONG" if sig.direction == "BUY" else "SHORT"
-                _try_open(direction, close_price, row_time.isoformat(), day_key)
+                # If using MTF, skip open when MTF is not aligned
+                if bot_cfg.get("use_mtf") and sig.mtf_aligned is False:
+                    try:
+                        append_autobot_log(f"MTF_BLOCKED {symbol} {sig.direction} score={sig.score:+.2f} at {row_time.isoformat()}")
+                    except Exception:
+                        pass
+                else:
+                    direction = "LONG" if sig.direction == "BUY" else "SHORT"
+                    # compute ATR-based SL/TP if possible
+                    try:
+                        last_atr = float(sub_df["atr_14"].iloc[-1]) if "atr_14" in sub_df.columns and not np.isnan(sub_df["atr_14"].iloc[-1]) else None
+                    except Exception:
+                        last_atr = None
+                    if last_atr is not None:
+                        atr_mul = float(bot_cfg.get("atr_multiplier", 1.5))
+                        rr = float(bot_cfg.get("risk_reward", 1.5))
+                        if direction == "LONG":
+                            calc_sl = close_price - atr_mul * last_atr
+                            calc_tp = close_price + rr * (close_price - calc_sl)
+                        else:
+                            calc_sl = close_price + atr_mul * last_atr
+                            calc_tp = close_price - rr * (calc_sl - close_price)
+                        _try_open(direction, close_price, row_time.isoformat(), day_key, override_sl=calc_sl, override_tp=calc_tp)
+                    else:
+                        _try_open(direction, close_price, row_time.isoformat(), day_key)
 
             bot_cfg["last_checked"] = row_time.isoformat()
 
@@ -1708,15 +1925,47 @@ def run_auto_bot_catchup(state: Dict[str, Any], mode: str, client: Any = None) -
 
     if open_pos is not None and close_on_reverse and _held_long_enough(open_pos.get("entry_time"), datetime.now()):
         live_sig = analyze_single_timeframe(df)
+        try:
+            if bot_cfg.get("use_mtf"):
+                live_sig = apply_mtf_confirmation(live_sig, exchange_name, symbol, timeframe, limit=min(200, WALLET_OHLCV_LIMIT))
+        except Exception:
+            pass
         want_dir = "LONG" if live_sig.direction == "BUY" else ("SHORT" if live_sig.direction == "SELL" else None)
         if want_dir is not None and want_dir != open_pos["direction"] and abs(live_sig.score) >= min_entry_score:
             _try_close(live_price or open_pos["entry_price"], "Auto-Bot Signal Reversed (Live)")
 
     if open_pos is None and live_price:
         live_sig = analyze_single_timeframe(df)
+        try:
+            if bot_cfg.get("use_mtf"):
+                live_sig = apply_mtf_confirmation(live_sig, exchange_name, symbol, timeframe, limit=min(200, WALLET_OHLCV_LIMIT))
+        except Exception:
+            pass
         if live_sig.direction in ("BUY", "SELL") and abs(live_sig.score) >= min_entry_score:
-            direction = "LONG" if live_sig.direction == "BUY" else "SHORT"
-            _try_open(direction, live_price, datetime.now().isoformat(), today_key)
+            if bot_cfg.get("use_mtf") and live_sig.mtf_aligned is False:
+                try:
+                    append_autobot_log(f"MTF_BLOCKED {symbol} {live_sig.direction} score={live_sig.score:+.2f} live")
+                except Exception:
+                    pass
+            else:
+                direction = "LONG" if live_sig.direction == "BUY" else "SHORT"
+                # compute ATR-based SL/TP from df
+                try:
+                    last_atr = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns and not np.isnan(df["atr_14"].iloc[-1]) else None
+                except Exception:
+                    last_atr = None
+                if last_atr is not None:
+                    atr_mul = float(bot_cfg.get("atr_multiplier", 1.5))
+                    rr = float(bot_cfg.get("risk_reward", 1.5))
+                    if direction == "LONG":
+                        calc_sl = live_price - atr_mul * last_atr
+                        calc_tp = live_price + rr * (live_price - calc_sl)
+                    else:
+                        calc_sl = live_price + atr_mul * last_atr
+                        calc_tp = live_price - rr * (calc_sl - live_price)
+                    _try_open(direction, live_price, datetime.now().isoformat(), today_key, override_sl=calc_sl, override_tp=calc_tp)
+                else:
+                    _try_open(direction, live_price, datetime.now().isoformat(), today_key)
 
     wallet["auto_bot"] = bot_cfg
     save_wallet_state(state)
@@ -2114,7 +2363,7 @@ def create_chart(df: pd.DataFrame, symbol: str, signal: Optional[Signal] = None)
     )
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="MACD", row=2, col=1)
-    fig.update_yaxes(title_text="RSI / Stoch", row=3, col=1, range=[0, 100])
+    fig.update_yaxes(title_text="RSI / Stochastic", row=3, col=1, range=[0, 100])
     fig.update_yaxes(title_text="Volume", row=4, col=1)
 
     return fig
@@ -2436,6 +2685,12 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
                             _diag_df = get_ohlcv(bot_exch, bot_symbol, bot_tf, limit=WALLET_OHLCV_LIMIT)
                             if not _diag_df.empty and len(_diag_df) >= 61:
                                 _diag_sig = analyze_single_timeframe(add_indicators(_diag_df))
+                                try:
+                                    if existing_cfg.get("use_mtf"):
+                                        _diag_sig = apply_mtf_confirmation(_diag_sig, bot_exch, bot_symbol, bot_tf,
+                                                                          limit=min(200, WALLET_OHLCV_LIMIT))
+                                except Exception:
+                                    pass
                                 score_now = _diag_sig.score
                                 thr = float(existing_cfg.get("min_entry_score", 3.0))
                                 dc1, dc2, dc3 = st.columns(3)
@@ -2495,10 +2750,16 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
         with c1:
             leverage = st.slider("Leverage Bot", 1, 125, int(bot_cfg.get("leverage", 10)), 1, key=f"autobot_leverage_{mode}")
         with c2:
+            # available balance (demo) = total balance minus margin already used by open demo positions
+            available = wallet.get("balance", 0.0) - wallet_used_margin(wallet)
             if mode == "demo":
-                margin_pct = st.slider("Margin per Posisi (% saldo tersedia)", 1, 100,
-                                        int(bot_cfg.get("margin_pct", 10)), 1, key=f"autobot_marginpct_{mode}")
-                margin_usdt = bot_cfg.get("margin_usdt", 50.0)
+                # use select_slider to pick from discrete percentage options
+                margin_pct = st.select_slider(
+                    "Margin (% saldo tersedia)", options=[5, 10, 25, 50, 75, 100],
+                    value=10, key=f"autobot_margin_pct_{mode}"
+                )
+                margin_usdt = round(max(available, 0) * margin_pct / 100, 2)
+                st.caption(f"Margin dipakai: **${margin_usdt:,.2f}** dari tersedia ${format_number(available)}")
             else:
                 margin_usdt = st.number_input("Margin per Posisi (USDT)", min_value=5.0,
                                                value=float(bot_cfg.get("margin_usdt", 50.0)), step=5.0,
@@ -2526,6 +2787,24 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
             "kalau ingin bot hanya entry saat sinyalnya jauh lebih kuat/meyakinkan (lebih jarang entry, tapi "
             "lebih selektif). Nilai 3.0 = sama persis dengan ambang default, tidak ada penyaringan tambahan."
         )
+
+        # Option: use MTF confirmation for Auto-Bot
+        use_mtf = st.checkbox(
+            "Enable MTF Confirmation for Auto-Bot (use higher timeframe)",
+            value=bool(bot_cfg.get("use_mtf", False)), key=f"autobot_use_mtf_{mode}"
+        )
+        if use_mtf:
+            st.caption("MTF aktif: Auto-Bot akan menambah konfirmasi dari timeframe yang lebih tinggi sebelum membuka posisi.")
+
+        # Risk management inputs
+        csa, csb, csc = st.columns([1, 1, 1])
+        with csa:
+            rr = st.slider("Risk-Reward Ratio (RR)", 1.0, 5.0, float(bot_cfg.get("risk_reward", 1.5)), 0.1, key=f"autobot_rr_{mode}")
+        with csb:
+            max_risk = st.number_input("Max Risk per Trade (% of balance)", min_value=0.001, max_value=0.2, value=float(bot_cfg.get("max_risk_pct", 0.01)), step=0.001, format="%.3f", key=f"autobot_maxrisk_{mode}")
+        with csc:
+            atr_mul = st.slider("ATR Multiplier for SL", 0.5, 4.0, float(bot_cfg.get("atr_multiplier", 1.5)), 0.1, key=f"autobot_atrmul_{mode}")
+        st.caption("Auto-Bot akan menghitung SL berdasarkan ATR × multiplier, dan menyesuaikan ukuran posisi agar risiko tidak melebihi batas % saldo yang ditentukan.")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -2578,6 +2857,10 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
                 "max_sessions_per_day": int(max_sessions), "close_on_signal_reverse": bool(close_on_reverse),
                 "min_hold_candles": int(min_hold_candles), "min_entry_score": float(min_entry_score),
                 "trades_today": prev_trades_today, "trades_date": prev_trades_date,
+                "use_mtf": bool(use_mtf),
+                "risk_reward": float(min_entry_score) if False else float(bot_cfg.get("risk_reward", 1.5)),
+                "max_risk_pct": float(bot_cfg.get("max_risk_pct", 0.01)),
+                "atr_multiplier": float(bot_cfg.get("atr_multiplier", 1.5)),
                 "last_checked": new_last_checked,
             }
             wallet["auto_bot"] = new_cfg
@@ -2593,6 +2876,25 @@ def _render_auto_bot_panel(state: Dict[str, Any], mode: str, exchange_name: str,
             st.success(f"🟢 Auto-Bot AKTIF di {current_cfg.get('symbol')} ({current_cfg.get('timeframe')})")
         else:
             st.caption("⚪ Auto-Bot nonaktif.")
+
+        # Manual trigger button for diagnostics / immediate run
+        st.markdown("---")
+        if st.button("▶️ Run Auto-Bot Now (Catchup & Live Check)", key=f"autobot_run_now_{mode}"):
+            with st.spinner("Menjalankan Auto-Bot (catch-up + live check)..."):
+                try:
+                    events = run_auto_bot_catchup(state, mode, client)
+                    if events:
+                        st.success(f"Auto-Bot selesai: {len(events)} event(s) terjadi.")
+                        for e in events:
+                            if isinstance(e, dict):
+                                st.write(e)
+                            else:
+                                st.write(str(e))
+                    else:
+                        st.info("Auto-Bot selesai: tidak ada event baru.")
+                except Exception as e:
+                    st.error(f"Error menjalankan Auto-Bot: {e}")
+                save_wallet_state(state)
 
 
 def _render_order_form(state: Dict[str, Any], mode: str, exchange_name: str, symbol: str,
@@ -2622,8 +2924,8 @@ def _render_order_form(state: Dict[str, Any], mode: str, exchange_name: str, sym
         if mode == "demo":
             available = wallet["balance"] - wallet_used_margin(wallet)
             pct_quick = st.select_slider(
-                "Margin (% saldo tersedia)", options=[5, 10, 25, 50, 75, 100], value=10,
-                key="order_margin_pct"
+                "Margin (% saldo tersedia)", options=[5, 10, 25, 50, 75, 100],
+                value=10, key=f"order_margin_pct_{mode}"
             )
             margin_usdt = round(max(available, 0) * pct_quick / 100, 2)
             st.caption(f"Margin dipakai: **${margin_usdt:,.2f}** dari tersedia ${format_number(available)}")
@@ -2943,96 +3245,190 @@ def render_mtf_ui() -> bool:
 # =============================================================================
 
 def inject_transformer_theme() -> None:
-    css = f"""
+    css = """
 <style>
-html {{
+html {
     scroll-behavior: smooth;
-}}
+}
+body {
+    min-width: 0;
+}
 .stApp, .main, section[data-testid="stSidebar"],
 div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
-.block-container {{
+.block-container {
     -webkit-overflow-scrolling: touch;
     scroll-behavior: smooth;
-}}
-* {{
+    width: auto !important;
+    max-width: 100% !important;
+}
+* {
     -webkit-tap-highlight-color: transparent;
-}}
-.stApp {{
+}
+.stApp {
     font-size: 12px;
+    min-height: 100vh;
     overscroll-behavior-y: contain;
-    background:
-        radial-gradient(circle at 15% 10%, rgba(0,229,255,0.10) 0%, transparent 40%),
-        radial-gradient(circle at 85% 85%, rgba(255,61,61,0.08) 0%, transparent 40%),
-        repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 2px, transparent 2px, transparent 26px),
-        linear-gradient(160deg, #10161d 0%, #1b2530 45%, #0d1218 100%);
-    background-attachment: fixed;
-    transform: translateZ(0);
-    will-change: scroll-position;
-}}
-.airise-header {{
+    background: radial-gradient(circle at 30% 20%, rgba(255, 140, 45, 0.2), transparent 18%),
+                radial-gradient(circle at 70% 40%, rgba(255, 80, 20, 0.16), transparent 20%),
+                linear-gradient(180deg, #130605 0%, #2b0f0b 45%, #090302 100%);
+    background-size: 220% 220%, 200% 200%, 100% 100%;
+    animation: firePulse 20s ease-in-out infinite alternate;
+    position: relative;
+    z-index: 0;
+}
+@keyframes firePulse {
+    0% { background-position: 0% 0%, 100% 100%, 50% 50%; }
+    50% { background-position: 12% 16%, 88% 82%, 55% 45%; }
+    100% { background-position: 0% 0%, 100% 100%, 50% 50%; }
+}
+@media (max-width: 900px) {
+    .block-container {
+        padding: 10px 12px !important;
+        max-width: 100% !important;
+    }
+    .stApp {
+        font-size: 13px;
+    }
+    section[data-testid="stSidebar"] {
+        width: 100% !important;
+        position: relative !important;
+        border-right: none !important;
+    }
+    div[data-testid="column"] {
+        width: 100% !important;
+        display: block !important;
+        margin-bottom: 16px !important;
+    }
+    .stButton button {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    div[data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+    }
+    .airise-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    .airise-menu-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    .airise-menu-btn button {
+        padding: 8px 12px !important;
+        font-size: 11px !important;
+        width: auto !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+    .airise-title {
+        font-size: 22px;
+    }
+    .airise-tagline {
+        font-size: 11px;
+    }
+}
+@media (max-width: 640px) {
+    .stApp {
+        font-size: 14px;
+    }
+    .airise-header {
+        padding: 10px 8px;
+        align-items: flex-start;
+    }
+    .stButton button {
+        font-size: 12px;
+        padding: 8px 10px;
+    }
+    .airise-menu-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    .airise-menu-btn button {
+        padding: 7px 10px !important;
+        font-size: 11px !important;
+        width: auto !important;
+        max-width: 100% !important;
+    }
+    .stMetricValue {
+        font-size: 14px !important;
+    }
+    .stMetric label, .stMetricLabel {
+        font-size: 10px !important;
+    }
+}
+.airise-header {
     display: flex; align-items: center; gap: 14px;
     padding: 14px 20px; margin-bottom: 6px;
     border-radius: 14px;
     background: linear-gradient(90deg, rgba(41,121,255,0.14), rgba(0,0,0,0));
     border: 1px solid rgba(0,229,255,0.25);
     box-shadow: 0 0 18px rgba(0,229,255,0.08) inset;
-}}
-.airise-title {{
+}
+.airise-title {
     font-size: 26px; font-weight: 800; letter-spacing: 1px;
     background: linear-gradient(90deg, #2f7fd6, #6fa8dc, #2f7fd6);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     margin: 0;
-}}
-.airise-tagline {{
+}
+.airise-tagline {
     font-size: 12px; color: #8aa0b5; margin: 0; letter-spacing: 0.5px;
-}}
-.airise-menu-btn button {{
+}
+.airise-menu-btn button {
     background: linear-gradient(90deg, #2979ff, #00e5ff) !important;
     color: #08131c !important;
     font-weight: 700 !important;
     border: none !important;
     border-radius: 8px !important;
-}}
-div[data-testid="stMetric"] {{
+}
+div[data-testid="stMetric"] {
     font-size: 12px;
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 10px;
     padding: 8px 10px 6px 10px;
-}}
+}
 div[data-testid="stMetric"] label,
-div[data-testid="stMetricLabel"] {{
+div[data-testid="stMetricLabel"] {
     font-size: 10px !important;
     color: #8aa0b5 !important;
     white-space: normal !important;
-}}
-div[data-testid="stMetricValue"] {{
+}
+div[data-testid="stMetricValue"] {
     font-size: 15px !important;
     line-height: 1.2 !important;
-}}
-div[data-testid="stMetricDelta"] {{
+}
+div[data-testid="stMetricDelta"] {
     font-size: 10.5px !important;
-}}
-div[data-testid="column"] {{
+}
+div[data-testid="column"] {
     padding: 0 4px;
-}}
-.stButton button {{
+}
+.stButton button {
     font-size: 12px; padding: 4px 12px;
     border: 1px solid rgba(0,229,255,0.3) !important;
-}}
-.stDataFrame {{ font-size: 11px; }}
-.signal-buy {{ background: #1a3a1a; color: #00ff88; padding: 4px 12px; border-radius: 12px; border: 1px solid #00ff8855; }}
-.signal-sell {{ background: #3a1a1a; color: #ff5555; padding: 4px 12px; border-radius: 12px; border: 1px solid #ff555555; }}
-.signal-hold {{ background: #3a3a1a; color: #ffe600; padding: 4px 12px; border-radius: 12px; border: 1px solid #ffe60055; }}
-section[data-testid="stSidebar"] {{
+}
+.stDataFrame { font-size: 11px; }
+.signal-buy { background: #1a3a1a; color: #00ff88; padding: 4px 12px; border-radius: 12px; border: 1px solid #00ff8855; }
+.signal-sell { background: #3a1a1a; color: #ff5555; padding: 4px 12px; border-radius: 12px; border: 1px solid #ff555555; }
+.signal-hold { background: #3a3a1a; color: #ffe600; padding: 4px 12px; border-radius: 12px; border: 1px solid #ffe60055; }
+section[data-testid="stSidebar"] {
     background: linear-gradient(180deg, #131a22 0%, #0d1218 100%);
     border-right: 1px solid rgba(0,229,255,0.15);
-}}
-.airise-nav-active button {{
+}
+@media (max-width: 900px) {
+    section[data-testid="stSidebar"] {
+        position: relative !important;
+        width: 100% !important;
+        border-right: none !important;
+    }
+}
+.airise-nav-active button {
     background: linear-gradient(90deg, #2979ff, #00e5ff) !important;
     color: #08131c !important;
     font-weight: 800 !important;
-}}
+}
 </style>
 """
     st.markdown(css, unsafe_allow_html=True)
@@ -3065,12 +3461,6 @@ def render_header() -> None:
         f'</div></div>'
     )
     st.markdown(header_html, unsafe_allow_html=True)
-    if not logo_file_found():
-        st.caption(
-            "ℹ️ File logo `assets/airise_logo.png` belum ditemukan di server — memakai ikon robot vektor "
-            "bawaan sebagai gantinya. Untuk memakai logo PNG kamu sendiri, upload file ke salah satu folder: "
-            + ", ".join(f"`{p}`" for p in LOGO_CANDIDATE_PATHS)
-        )
 
 # =============================================================================
 # LOGIN GATE
@@ -3080,15 +3470,42 @@ def inject_login_theme() -> None:
     css = """
 <style>
 html { scroll-behavior: smooth; }
+body {
+    min-width: 0;
+}
 .block-container {
     max-width: 380px !important;
     padding-top: 4.5rem !important;
     padding-bottom: 2rem !important;
+    width: auto !important;
 }
 .login-logo-wrap {
     display: flex;
     justify-content: center;
     margin-bottom: 4px;
+}
+@media (max-width: 640px) {
+    .block-container {
+        padding-top: 3.2rem !important;
+        padding-bottom: 1.5rem !important;
+        margin: 0 8px !important;
+    }
+    .login-title {
+        font-size: 22px;
+    }
+    .login-subtitle {
+        font-size: 11px;
+    }
+    div[data-testid="stForm"] {
+        padding: 18px 18px 16px 18px;
+    }
+    div[data-testid="stForm"] .stTextInput input {
+        font-size: 12px;
+    }
+    div[data-testid="stFormSubmitButton"] button {
+        padding: 9px 0;
+        font-size: 13px;
+    }
 }
 .login-title {
     text-align: center;
@@ -3169,8 +3586,7 @@ div[data-testid="stFormSubmitButton"] button:hover {
     st.markdown(css, unsafe_allow_html=True)
 
 def render_login_page() -> None:
-    logo_img = render_logo_img(height_px=110)
-    st.markdown(f'<div class="login-logo-wrap">{logo_img}</div>', unsafe_allow_html=True)
+    st.components.v1.html(get_robot_logo_html(), height=220)
     st.markdown(f'<p class="login-title">{BOT_NAME}</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="login-subtitle">Masuk untuk mengakses Analyzer &amp; Live Trading</p>',
@@ -3296,6 +3712,20 @@ def main() -> None:
 
         st.divider()
         render_telegram_ui()
+
+        # --- Session persistence buttons ---
+        if st.button("💾 Save Session", key="save_session_btn"):
+            save_session_to_disk()
+            st.success("✅ Session disimpan ke disk.")
+        if st.button("🔁 Load Session", key="load_session_btn"):
+            loaded = load_session_from_disk()
+            if loaded:
+                for kk, vv in loaded.items():
+                    st.session_state[kk] = vv
+                st.success("✅ Session dimuat dari disk.")
+                st.rerun()
+            else:
+                st.info("Tidak ada session tersimpan.")
 
         st.divider()
         st.markdown("### 🔗 Symbol")

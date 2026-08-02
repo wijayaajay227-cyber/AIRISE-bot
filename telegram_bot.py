@@ -346,8 +346,8 @@ TP1: ${format_number(signal.tp1)}
             
         except ImportError as e:
             await msg.edit_text(
-                f"❌ Error: Modul app tidak ditemukan.\n"
-                "Pastikan app.py ada di folder yang sama.\n\n"
+                f"❌ Error: modul aplikasi tidak dapat diimpor.\n"
+                "Pastikan file app.py atau real.py ada di folder yang sama dan dependensinya sudah terinstall.\n\n"
                 f"Detail: {str(e)}"
             )
             logger.error(f"Import error in analyze: {e}")

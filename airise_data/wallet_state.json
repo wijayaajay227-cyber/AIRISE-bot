@@ -1,25 +1,29 @@
 {
   "demo": {
-    "balance": 10.0,
+    "balance": 20.371218167717426,
     "positions": [],
-    "last_checked": "2026-07-25T17:09:37.408968",
+    "last_checked": "2026-08-02T21:05:44.611113",
     "auto_bot": {
       "enabled": true,
       "exchange": "Gate.io",
-      "symbol": "GWEI/USDT:USDT",
-      "timeframe": "15m",
+      "symbol": "BTC/USDT:USDT",
+      "timeframe": "5m",
       "leverage": 5,
-      "margin_pct": 10.0,
-      "margin_usdt": 50.0,
+      "margin_pct": 100.0,
+      "margin_usdt": 18.0,
       "tp_pct": 2.0,
       "sl_pct": 6.0,
       "max_sessions_per_day": 10,
       "close_on_signal_reverse": true,
       "min_hold_candles": 2,
       "min_entry_score": 3.0,
-      "trades_today": 0,
-      "trades_date": "2026-07-25",
-      "last_checked": "2026-07-25T09:45:00"
+      "trades_today": 9,
+      "trades_date": "2026-08-02",
+      "use_mtf": true,
+      "risk_reward": 1.5,
+      "max_risk_pct": 0.01,
+      "atr_multiplier": 1.5,
+      "last_checked": "2026-08-02T14:00:00"
     }
   },
   "real": {
