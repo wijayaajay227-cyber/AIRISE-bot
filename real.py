@@ -3437,9 +3437,9 @@ def render_sidebar_toggle_button() -> None:
     if "sidebar_open" not in st.session_state:
         st.session_state.sidebar_open = True
 
-    label = "☰ Tutup Menu" if st.session_state.sidebar_open else "☰ Buka Menu"
+    label = "⯇" if st.session_state.sidebar_open else "⯈"
     st.markdown('<div class="airise-menu-btn">', unsafe_allow_html=True)
-    if st.button(label, key="sidebar_toggle_btn", use_container_width=False):
+    if st.button(label, key="sidebar_toggle_btn", use_container_width=True):
         st.session_state.sidebar_open = not st.session_state.sidebar_open
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
@@ -3447,7 +3447,29 @@ def render_sidebar_toggle_button() -> None:
     if not st.session_state.sidebar_open:
         st.markdown(
             """<style>
-            section[data-testid="stSidebar"] { display: none !important; }
+            section[data-testid="stSidebar"] {
+                width: 56px !important;
+                min-width: 56px !important;
+                max-width: 56px !important;
+                overflow: hidden !important;
+            }
+            section[data-testid="stSidebar"] .css-1lcbmhc {
+                padding: 4px 0 !important;
+            }
+            .airise-menu-btn {
+                display: flex !important;
+                justify-content: center !important;
+                padding: 4px 0 !important;
+            }
+            .airise-menu-btn button {
+                padding: 6px 6px !important;
+                font-size: 14px !important;
+                width: auto !important;
+                min-width: 0 !important;
+            }
+            section[data-testid="stSidebar"] .css-1lcbmhc > div:not(:first-child) {
+                display: none !important;
+            }
             </style>""",
             unsafe_allow_html=True
         )
@@ -3667,7 +3689,6 @@ def main() -> None:
         st.stop()
 
     render_header()
-    render_sidebar_toggle_button()
     st.warning("⚠️ Bukan nasihat keuangan. Selalu DYOR!")
 
     if "selected_symbol" not in st.session_state:
@@ -3678,11 +3699,14 @@ def main() -> None:
         st.session_state.timeframe = "15m"
 
     with st.sidebar:
-        st.markdown(f"### ⚙️ {BOT_NAME} Settings")
-        render_logout_button()
-        st.divider()
+        render_sidebar_toggle_button()
 
-        exchange_name = st.selectbox(
+        if st.session_state.sidebar_open:
+            st.markdown(f"### ⚙️ {BOT_NAME} Settings")
+            render_logout_button()
+            st.divider()
+
+            exchange_name = st.selectbox(
             "Exchange",
             list(EXCHANGES.keys()),
             index=list(EXCHANGES.keys()).index(st.session_state.exchange_name) if st.session_state.exchange_name in EXCHANGES else 0
