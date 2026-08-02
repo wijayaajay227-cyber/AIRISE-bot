@@ -3290,7 +3290,9 @@ div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
         font-size: 13px;
     }
     section[data-testid="stSidebar"] {
-        width: 100% !important;
+        width: 10cm !important;
+        min-width: 10cm !important;
+        max-width: 10cm !important;
         position: relative !important;
         border-right: none !important;
     }
@@ -3339,14 +3341,14 @@ div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
     }
     .stButton button {
         font-size: 12px;
-        padding: 8px 10px;
+        padding: 6px 10px;
     }
     .airise-menu-btn {
         width: 100%;
         justify-content: center;
     }
     .airise-menu-btn button {
-        padding: 7px 10px !important;
+        padding: 6px 10px !important;
         font-size: 11px !important;
         width: auto !important;
         max-width: 100% !important;
@@ -3357,7 +3359,28 @@ div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
     .stMetric label, .stMetricLabel {
         font-size: 10px !important;
     }
+    section[data-testid="stSidebar"] {
+        width: 10cm !important;
+        min-width: 10cm !important;
+        max-width: 10cm !important;
+        padding: 0 !important;
+    }
+    section[data-testid="stSidebar"] .css-1lcbmhc {
+        padding: 8px 10px !important;
+    }
+    section[data-testid="stSidebar"] .css-1lcbmhc > div {
+        margin-bottom: 10px !important;
+    }
+    div[data-testid="column"] {
+        width: 100% !important;
+        display: block !important;
+        margin-bottom: 10px !important;
+    }
+    .stTextInput>div, .stSelectbox>div, .stSlider>div {
+        min-width: 0 !important;
+    }
 }
+
 .airise-header {
     display: flex; align-items: center; gap: 14px;
     padding: 14px 20px; margin-bottom: 6px;
@@ -3416,11 +3439,16 @@ div[data-testid="column"] {
 section[data-testid="stSidebar"] {
     background: linear-gradient(180deg, #131a22 0%, #0d1218 100%);
     border-right: 1px solid rgba(0,229,255,0.15);
+    width: 10cm !important;
+    min-width: 10cm !important;
+    max-width: 10cm !important;
 }
 @media (max-width: 900px) {
     section[data-testid="stSidebar"] {
         position: relative !important;
-        width: 100% !important;
+        width: 10cm !important;
+        min-width: 10cm !important;
+        max-width: 10cm !important;
         border-right: none !important;
     }
 }
@@ -3437,9 +3465,9 @@ def render_sidebar_toggle_button() -> None:
     if "sidebar_open" not in st.session_state:
         st.session_state.sidebar_open = True
 
-    label = "⯇" if st.session_state.sidebar_open else "⯈"
+    label = "TUTUP" if st.session_state.sidebar_open else "BUKA"
     st.markdown('<div class="airise-menu-btn">', unsafe_allow_html=True)
-    if st.button(label, key="sidebar_toggle_btn", use_container_width=True):
+    if st.button(label, key="sidebar_toggle_btn", use_container_width=False):
         st.session_state.sidebar_open = not st.session_state.sidebar_open
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
@@ -3448,22 +3476,21 @@ def render_sidebar_toggle_button() -> None:
         st.markdown(
             """<style>
             section[data-testid="stSidebar"] {
-                width: 56px !important;
-                min-width: 56px !important;
-                max-width: 56px !important;
-                overflow: hidden !important;
-            }
-            section[data-testid="stSidebar"] .css-1lcbmhc {
+                width: 48px !important;
+                min-width: 48px !important;
+                max-width: 48px !important;
                 padding: 4px 0 !important;
             }
             .airise-menu-btn {
                 display: flex !important;
-                justify-content: center !important;
-                padding: 4px 0 !important;
+                justify-content: flex-start !important;
+                align-items: center !important;
+                padding: 4px 4px 10px !important;
+                margin-bottom: 6px !important;
             }
             .airise-menu-btn button {
-                padding: 6px 6px !important;
-                font-size: 14px !important;
+                padding: 6px 10px !important;
+                font-size: 12px !important;
                 width: auto !important;
                 min-width: 0 !important;
             }
@@ -3707,11 +3734,13 @@ def main() -> None:
             st.divider()
 
             exchange_name = st.selectbox(
-            "Exchange",
-            list(EXCHANGES.keys()),
-            index=list(EXCHANGES.keys()).index(st.session_state.exchange_name) if st.session_state.exchange_name in EXCHANGES else 0
-        )
-        st.session_state.exchange_name = exchange_name
+                "Exchange",
+                list(EXCHANGES.keys()),
+                index=list(EXCHANGES.keys()).index(st.session_state.exchange_name) if st.session_state.exchange_name in EXCHANGES else 0
+            )
+            st.session_state.exchange_name = exchange_name
+        else:
+            exchange_name = st.session_state.exchange_name
 
         timeframe = st.selectbox(
             "Timeframe",
