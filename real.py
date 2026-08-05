@@ -3282,19 +3282,25 @@ div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
     100% { background-position: 0% 0%, 100% 100%, 50% 50%; }
 }
 @media (max-width: 900px) {
-    .block-container {
-        padding: 10px 12px !important;
-        max-width: 100% !important;
+    section[data-testid="stSidebar"] {
+        width: min(86vw, 320px) !important;
+        min-width: min(86vw, 320px) !important;
+        max-width: min(86vw, 320px) !important;
+        border-right: none !important;
     }
+}
     .stApp {
         font-size: 13px;
     }
     section[data-testid="stSidebar"] {
-        width: 10cm !important;
-        min-width: 10cm !important;
-        max-width: 10cm !important;
-        position: relative !important;
-        border-right: none !important;
+    background: linear-gradient(180deg, #131a22 0%, #0d1218 100%);
+    border-right: 1px solid rgba(0,229,255,0.15);
+    width: 300px !important;
+    min-width: 300px !important;
+    max-width: 300px !important;
+    transition: width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease;
+    overflow-x: hidden;
+}
     }
     div[data-testid="column"] {
         width: 100% !important;
@@ -3465,40 +3471,26 @@ def render_sidebar_toggle_button() -> None:
     if "sidebar_open" not in st.session_state:
         st.session_state.sidebar_open = True
 
-    label = "TUTUP" if st.session_state.sidebar_open else "BUKA"
+    is_open = st.session_state.sidebar_open
+    label = "◀ Tutup Menu" if is_open else "▶"
     st.markdown('<div class="airise-menu-btn">', unsafe_allow_html=True)
-    if st.button(label, key="sidebar_toggle_btn", use_container_width=False):
-        st.session_state.sidebar_open = not st.session_state.sidebar_open
+    if st.button(label, key="sidebar_toggle_btn", use_container_width=is_open,
+                 help="Buka/tutup panel Exchange, Timeframe, Symbol, dll"):
+        st.session_state.sidebar_open = not is_open
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if not st.session_state.sidebar_open:
+    if not is_open:
         st.markdown(
             """<style>
             section[data-testid="stSidebar"] {
-                width: 48px !important;
-                min-width: 48px !important;
-                max-width: 48px !important;
-                padding: 4px 0 !important;
+                width: 56px !important;
+                min-width: 56px !important;
+                max-width: 56px !important;
             }
-            .airise-menu-btn {
-                display: flex !important;
-                justify-content: flex-start !important;
-                align-items: center !important;
-                padding: 4px 4px 10px !important;
-                margin-bottom: 6px !important;
-            }
-            .airise-menu-btn button {
-                padding: 6px 10px !important;
-                font-size: 12px !important;
-                width: auto !important;
-                min-width: 0 !important;
-            }
-            section[data-testid="stSidebar"] .css-1lcbmhc > div:not(:first-child) {
-                display: none !important;
-            }
+            .st-key-sidebar_panel { display: none !important; }
             </style>""",
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
 def render_header() -> None:
