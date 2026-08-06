@@ -2,7 +2,7 @@
   "demo": {
     "balance": 20.86633256880021,
     "positions": [],
-    "last_checked": "2026-08-06T17:21:45.764978",
+    "last_checked": "2026-08-06T17:22:26.245560",
     "auto_bot": {
       "enabled": false,
       "exchange": "OKX",
