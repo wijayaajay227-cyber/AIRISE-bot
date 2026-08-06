@@ -1,29 +1,29 @@
 {
   "demo": {
-    "balance": 20.371218167717426,
+    "balance": 20.86633256880021,
     "positions": [],
-    "last_checked": "2026-08-02T21:05:44.611113",
+    "last_checked": "2026-08-06T17:19:36.277661",
     "auto_bot": {
-      "enabled": true,
-      "exchange": "Gate.io",
-      "symbol": "BTC/USDT:USDT",
-      "timeframe": "5m",
+      "enabled": false,
+      "exchange": "OKX",
+      "symbol": "0G/USDT:USDT",
+      "timeframe": "15m",
       "leverage": 5,
-      "margin_pct": 100.0,
-      "margin_usdt": 18.0,
+      "margin_pct": 10.0,
+      "margin_usdt": 2.09,
       "tp_pct": 2.0,
       "sl_pct": 6.0,
       "max_sessions_per_day": 10,
       "close_on_signal_reverse": true,
       "min_hold_candles": 2,
       "min_entry_score": 3.0,
-      "trades_today": 9,
-      "trades_date": "2026-08-02",
+      "trades_today": 0,
+      "trades_date": "2026-08-06",
       "use_mtf": true,
       "risk_reward": 1.5,
       "max_risk_pct": 0.01,
       "atr_multiplier": 1.5,
-      "last_checked": "2026-08-02T14:00:00"
+      "last_checked": "2026-08-06T10:10:00"
     }
   },
   "real": {

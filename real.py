@@ -3241,228 +3241,130 @@ def render_mtf_ui() -> bool:
     return st.checkbox("Enable MTF", value=True)
 
 # =============================================================================
-# STYLE — BACKGROUND & LOGO (TEMA ROBOT/MECHA BIRU-PUTIH, SESUAI LOGO AIRISE)
+# STYLE — TEMA ROBOT BIRU (BACKGROUND & LOGO)
 # =============================================================================
+# Semua warna dipusatkan di satu dict Python di bawah ini — kalau mau ganti
+# nuansa biru robotnya, cukup ubah nilai di THEME, tidak perlu utak-atik CSS.
+
+THEME: Dict[str, str] = {
+    "bg_deep": "#050b14",          # navy paling gelap
+    "bg_mid": "#0b1a2b",           # navy tengah
+    "glow_a": "rgba(41, 121, 255, 0.20)",   # glow biru
+    "glow_b": "rgba(0, 229, 255, 0.16)",    # glow cyan
+    "accent_a": "#2979ff",         # biru utama (tombol, aksen)
+    "accent_b": "#00e5ff",         # cyan (highlight, mata robot)
+    "accent_c": "#6fa8dc",         # biru muda (judul)
+    "text_muted": "#8aa0b5",       # teks sekunder
+    "border": "rgba(0, 229, 255, 0.22)",
+    "sidebar_top": "#101f30",
+    "sidebar_bottom": "#070d16",
+    "sidebar_width": "300px",
+}
+
 
 def inject_transformer_theme() -> None:
-    css = """
+    t = THEME
+    css = f"""
 <style>
-html {
-    scroll-behavior: smooth;
-}
-body {
-    min-width: 0;
-}
-.stApp, .main, section[data-testid="stSidebar"],
-div[data-testid="stVerticalBlock"], div[data-testid="stDataFrame"],
-.block-container {
-    -webkit-overflow-scrolling: touch;
-    scroll-behavior: smooth;
-    width: auto !important;
-    max-width: 100% !important;
-}
-* {
-    -webkit-tap-highlight-color: transparent;
-}
-.stApp {
+:root {{
+    --accent-a: {t['accent_a']};
+    --accent-b: {t['accent_b']};
+    --accent-c: {t['accent_c']};
+    --text-muted: {t['text_muted']};
+    --border: {t['border']};
+}}
+html {{ scroll-behavior: smooth; }}
+* {{ -webkit-tap-highlight-color: transparent; }}
+
+.stApp {{
     font-size: 12px;
     min-height: 100vh;
-    overscroll-behavior-y: contain;
-    background: radial-gradient(circle at 30% 20%, rgba(255, 140, 45, 0.2), transparent 18%),
-                radial-gradient(circle at 70% 40%, rgba(255, 80, 20, 0.16), transparent 20%),
-                linear-gradient(180deg, #130605 0%, #2b0f0b 45%, #090302 100%);
-    background-size: 220% 220%, 200% 200%, 100% 100%;
-    animation: firePulse 20s ease-in-out infinite alternate;
-    position: relative;
-    z-index: 0;
-}
-@keyframes firePulse {
-    0% { background-position: 0% 0%, 100% 100%, 50% 50%; }
-    50% { background-position: 12% 16%, 88% 82%, 55% 45%; }
-    100% { background-position: 0% 0%, 100% 100%, 50% 50%; }
-}
-@media (max-width: 900px) {
-    section[data-testid="stSidebar"] {
+    background:
+        radial-gradient(circle at 18% 12%, {t['glow_a']}, transparent 32%),
+        radial-gradient(circle at 82% 88%, {t['glow_b']}, transparent 38%),
+        linear-gradient(180deg, {t['bg_deep']} 0%, {t['bg_mid']} 50%, {t['bg_deep']} 100%);
+    background-attachment: fixed;
+}}
+
+section[data-testid="stSidebar"][aria-expanded="true"] {{
+    background: linear-gradient(180deg, {t['sidebar_top']} 0%, {t['sidebar_bottom']} 100%);
+    border-right: 1px solid var(--border);
+    width: {t['sidebar_width']} !important;
+    min-width: {t['sidebar_width']} !important;
+    max-width: {t['sidebar_width']} !important;
+    transition: width 0.2s ease;
+}}
+
+@media (max-width: 900px) {{
+    .stApp {{ font-size: 13px; }}
+    section[data-testid="stSidebar"][aria-expanded="true"] {{
         width: min(86vw, 320px) !important;
         min-width: min(86vw, 320px) !important;
         max-width: min(86vw, 320px) !important;
         border-right: none !important;
-    }
-}
-    .stApp {
-        font-size: 13px;
-    }
-    section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #131a22 0%, #0d1218 100%);
-    border-right: 1px solid rgba(0,229,255,0.15);
-    width: 300px !important;
-    min-width: 300px !important;
-    max-width: 300px !important;
-    transition: width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease;
-    overflow-x: hidden;
-}
-    }
-    div[data-testid="column"] {
-        width: 100% !important;
-        display: block !important;
-        margin-bottom: 16px !important;
-    }
-    .stButton button {
-        width: 100% !important;
-        min-width: 0 !important;
-    }
-    div[data-testid="stDataFrame"] {
-        overflow-x: auto !important;
-    }
-    .airise-header {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 10px;
-    }
-    .airise-menu-btn {
-        width: 100%;
-        justify-content: center;
-    }
-    .airise-menu-btn button {
-        padding: 8px 12px !important;
-        font-size: 11px !important;
-        width: auto !important;
-        max-width: 100% !important;
-        min-width: 0 !important;
-    }
-    .airise-title {
-        font-size: 22px;
-    }
-    .airise-tagline {
-        font-size: 11px;
-    }
-}
-@media (max-width: 640px) {
-    .stApp {
-        font-size: 14px;
-    }
-    .airise-header {
-        padding: 10px 8px;
-        align-items: flex-start;
-    }
-    .stButton button {
-        font-size: 12px;
-        padding: 6px 10px;
-    }
-    .airise-menu-btn {
-        width: 100%;
-        justify-content: center;
-    }
-    .airise-menu-btn button {
-        padding: 6px 10px !important;
-        font-size: 11px !important;
-        width: auto !important;
-        max-width: 100% !important;
-    }
-    .stMetricValue {
-        font-size: 14px !important;
-    }
-    .stMetric label, .stMetricLabel {
-        font-size: 10px !important;
-    }
-    section[data-testid="stSidebar"] {
-        width: 10cm !important;
-        min-width: 10cm !important;
-        max-width: 10cm !important;
-        padding: 0 !important;
-    }
-    section[data-testid="stSidebar"] .css-1lcbmhc {
-        padding: 8px 10px !important;
-    }
-    section[data-testid="stSidebar"] .css-1lcbmhc > div {
-        margin-bottom: 10px !important;
-    }
-    div[data-testid="column"] {
-        width: 100% !important;
-        display: block !important;
-        margin-bottom: 10px !important;
-    }
-    .stTextInput>div, .stSelectbox>div, .stSlider>div {
-        min-width: 0 !important;
-    }
-}
+    }}
+    .airise-header {{ flex-direction: column; align-items: stretch; gap: 10px; }}
+    div[data-testid="column"] {{ width: 100% !important; display: block !important; margin-bottom: 12px !important; }}
+    .stButton button {{ width: 100% !important; }}
+    div[data-testid="stDataFrame"] {{ overflow-x: auto !important; }}
+}}
 
-.airise-header {
+@media (max-width: 640px) {{
+    .stApp {{ font-size: 14px; }}
+    .stMetricValue {{ font-size: 14px !important; }}
+    .stMetric label {{ font-size: 10px !important; }}
+    div[data-testid="stDataFrame"] {{ overflow-x: auto !important; }}
+}}
+
+.airise-header {{
     display: flex; align-items: center; gap: 14px;
-    padding: 14px 20px; margin-bottom: 6px;
-    border-radius: 14px;
-    background: linear-gradient(90deg, rgba(41,121,255,0.14), rgba(0,0,0,0));
-    border: 1px solid rgba(0,229,255,0.25);
+    padding: 14px 20px; margin-bottom: 6px; border-radius: 14px;
+    background: linear-gradient(90deg, rgba(41,121,255,0.16), transparent);
+    border: 1px solid var(--border);
     box-shadow: 0 0 18px rgba(0,229,255,0.08) inset;
-}
-.airise-title {
-    font-size: 26px; font-weight: 800; letter-spacing: 1px;
-    background: linear-gradient(90deg, #2f7fd6, #6fa8dc, #2f7fd6);
+}}
+.airise-title {{
+    font-size: 26px; font-weight: 800; letter-spacing: 1px; margin: 0;
+    background: linear-gradient(90deg, var(--accent-a), var(--accent-c), var(--accent-a));
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    margin: 0;
-}
-.airise-tagline {
-    font-size: 12px; color: #8aa0b5; margin: 0; letter-spacing: 0.5px;
-}
-.airise-menu-btn button {
-    background: linear-gradient(90deg, #2979ff, #00e5ff) !important;
-    color: #08131c !important;
+}}
+.airise-tagline {{ font-size: 12px; color: var(--text-muted); margin: 0; letter-spacing: 0.5px; }}
+
+.airise-menu-btn button,
+.airise-nav-active button {{
+    background: linear-gradient(90deg, var(--accent-a), var(--accent-b)) !important;
+    color: #061019 !important;
     font-weight: 700 !important;
     border: none !important;
     border-radius: 8px !important;
-}
-div[data-testid="stMetric"] {
+}}
+
+div[data-testid="stMetric"] {{
     font-size: 12px;
     background: rgba(255,255,255,0.025);
-    border: 1px solid rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.08);
     border-radius: 10px;
     padding: 8px 10px 6px 10px;
-}
+}}
 div[data-testid="stMetric"] label,
-div[data-testid="stMetricLabel"] {
+div[data-testid="stMetricLabel"] {{
     font-size: 10px !important;
-    color: #8aa0b5 !important;
+    color: var(--text-muted) !important;
     white-space: normal !important;
-}
-div[data-testid="stMetricValue"] {
-    font-size: 15px !important;
-    line-height: 1.2 !important;
-}
-div[data-testid="stMetricDelta"] {
-    font-size: 10.5px !important;
-}
-div[data-testid="column"] {
-    padding: 0 4px;
-}
-.stButton button {
+}}
+div[data-testid="stMetricValue"] {{ font-size: 15px !important; line-height: 1.2 !important; }}
+div[data-testid="stMetricDelta"] {{ font-size: 10.5px !important; }}
+div[data-testid="column"] {{ padding: 0 4px; }}
+
+.stButton button {{
     font-size: 12px; padding: 4px 12px;
-    border: 1px solid rgba(0,229,255,0.3) !important;
-}
-.stDataFrame { font-size: 11px; }
-.signal-buy { background: #1a3a1a; color: #00ff88; padding: 4px 12px; border-radius: 12px; border: 1px solid #00ff8855; }
-.signal-sell { background: #3a1a1a; color: #ff5555; padding: 4px 12px; border-radius: 12px; border: 1px solid #ff555555; }
-.signal-hold { background: #3a3a1a; color: #ffe600; padding: 4px 12px; border-radius: 12px; border: 1px solid #ffe60055; }
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #131a22 0%, #0d1218 100%);
-    border-right: 1px solid rgba(0,229,255,0.15);
-    width: 10cm !important;
-    min-width: 10cm !important;
-    max-width: 10cm !important;
-}
-@media (max-width: 900px) {
-    section[data-testid="stSidebar"] {
-        position: relative !important;
-        width: 10cm !important;
-        min-width: 10cm !important;
-        max-width: 10cm !important;
-        border-right: none !important;
-    }
-}
-.airise-nav-active button {
-    background: linear-gradient(90deg, #2979ff, #00e5ff) !important;
-    color: #08131c !important;
-    font-weight: 800 !important;
-}
+    border: 1px solid var(--border) !important;
+}}
+.stDataFrame {{ font-size: 11px; }}
+
+.signal-buy  {{ background: #103a26; color: #34e28a; padding: 4px 12px; border-radius: 12px; border: 1px solid #34e28a55; }}
+.signal-sell {{ background: #3a1424; color: #ff5f7e; padding: 4px 12px; border-radius: 12px; border: 1px solid #ff5f7e55; }}
+.signal-hold {{ background: #3a3212; color: #ffd54f; padding: 4px 12px; border-radius: 12px; border: 1px solid #ffd54f55; }}
 </style>
 """
     st.markdown(css, unsafe_allow_html=True)
