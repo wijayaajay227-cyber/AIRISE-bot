@@ -325,7 +325,7 @@ def resolve_symbol(target: str, all_symbols: List[str]) -> Optional[str]:
     for s in all_symbols:
         if s == f"{base}/USDT":
             return s
-        if s.startswith(f"{base}/USDT") or s.startswith(f"{base}-USDT") or s.startswith(f"{base}/USDT:") or s.endswith(":USDT"):
+        if s.startswith(f"{base}/USDT") or s.startswith(f"{base}-USDT") or s.startswith(f"{base}/USDT:"):
             exact_candidates.append(s)
         elif base in s and "USDT" in s:
             fuzzy_candidates.append(s)
