@@ -1,0 +1,214 @@
+diff --git a/real.py b/real.py
+index 0000000..0000000 100644
+--- a/real.py
++++ b/real.py
+@@ -31,10 +31,7 @@ LOGIN_USERNAME: str = "Swijaya07"
+ LOGIN_PASSWORD: str = "000000"
+ 
+ EXCHANGES: Dict[str, Dict[str, Any]] = {
+-    "OKX": {"id": ["okx"], "options": {"defaultType": "swap"}},
+-    "Gate.io": {"id": ["gate", "gateio"], "options": {"defaultType": "swap"}}
++    "OKX": {"id": ["okx"], "options": {"defaultType": "swap"}},
+ }
+@@ -636,6 +633,100 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+     return result
+ 
++# =============================================================================
++# SUPPORT & RESISTANCE — swing pivots, clustered into price zones
++# =============================================================================
++
++def find_support_resistance(df: pd.DataFrame, pivot_window: int = 3,
++                            max_levels: int = 6) -> Dict[str, Any]:
++    """Find horizontal S/R levels from confirmed local swing highs/lows.
++
++    Nearby pivots are clustered using an ATR-scaled tolerance. Levels are
++    estimates from the visible candle window, not guaranteed turning points.
++    """
++    empty = {
++        "supports": [], "resistances": [], "support": None, "resistance": None,
++        "status": "Data support/resistance tidak cukup", "zone_width": 0.0,
++        "pivot_levels": [],
++    }
++    required = {"high", "low", "close"}
++    if df is None or len(df) < max(2 * pivot_window + 3, 10) or not required.issubset(df.columns):
++        return empty
++
++    window = max(2, int(pivot_window))
++    highs = pd.to_numeric(df["high"], errors="coerce").to_numpy(dtype=float)
++    lows = pd.to_numeric(df["low"], errors="coerce").to_numpy(dtype=float)
++    close = pd.to_numeric(df["close"], errors="coerce").to_numpy(dtype=float)
++    valid = np.isfinite(highs) & np.isfinite(lows) & np.isfinite(close)
++    if valid.sum() < max(2 * window + 3, 10):
++        return empty
++
++    atr = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns and pd.notna(df["atr_14"].iloc[-1]) else 0.0
++    price = float(close[-1])
++    if not np.isfinite(price) or price <= 0:
++        return empty
++    tolerance = max(atr * 0.35, price * 0.001)
++    zone_width = max(atr * 0.25, price * 0.0005)
++
++    pivots: List[Tuple[float, str]] = []
++    for i in range(window, len(df) - window):
++        if not valid[i] or not valid[i-window:i+window+1].all():
++            continue
++        local_highs = highs[i-window:i+window+1]
++        local_lows = lows[i-window:i+window+1]
++        if highs[i] == np.max(local_highs) and np.count_nonzero(local_highs == highs[i]) == 1:
++            pivots.append((float(highs[i]), "R"))
++        if lows[i] == np.min(local_lows) and np.count_nonzero(local_lows == lows[i]) == 1:
++            pivots.append((float(lows[i]), "S"))
++
++    if not pivots:
++        return {**empty, "zone_width": zone_width}
++
++    # Merge nearby pivot prices, preserving the pivot type with the most touches.
++    clusters: List[Dict[str, Any]] = []
++    for level, kind in sorted(pivots, key=lambda item: item[0]):
++        if clusters and level - clusters[-1]["high"] <= tolerance:
++            cluster = clusters[-1]
++            cluster["prices"].append(level)
++            cluster["high"] = level
++            cluster["types"][kind] = cluster["types"].get(kind, 0) + 1
++        else:
++            clusters.append({"prices": [level], "high": level, "types": {kind: 1}})
++
++    levels = []
++    for cluster in clusters:
++        level = float(np.mean(cluster["prices"]))
++        kind = max(cluster["types"], key=cluster["types"].get)
++        levels.append({"price": level, "kind": kind, "touches": len(cluster["prices"])})
++
++    supports = sorted((x for x in levels if x["price"] < price), key=lambda x: price - x["price"])
++    resistances = sorted((x for x in levels if x["price"] > price), key=lambda x: x["price"] - price)
++    prev_close = float(close[-2]) if len(close) > 1 and np.isfinite(close[-2]) else price
++    last_high, last_low = float(highs[-1]), float(lows[-1])
++
++    # Determine breakout/retest against the nearest historical pivot, even if
++    # price has just crossed it and it is no longer on the opposite side.
++    nearest = min(levels, key=lambda x: abs(price - x["price"]))
++    level = nearest["price"]
++    if prev_close <= level + tolerance and price > level + tolerance:
++        status = "Breakout bullish"
++    elif prev_close >= level - tolerance and price < level - tolerance:
++        status = "Breakdown bearish"
++    elif prev_close > level and last_low <= level + tolerance and price >= level:
++        status = "Retest support"
++    elif prev_close < level and last_high >= level - tolerance and price <= level:
++        status = "Retest resistance"
++    elif supports and abs(price - supports[0]["price"]) <= tolerance:
++        status = "Dekat support"
++    elif resistances and abs(price - resistances[0]["price"]) <= tolerance:
++        status = "Dekat resistance"
++    else:
++        status = "Di antara support/resistance"
++
++    return {
++        "supports": supports[:max_levels],
++        "resistances": resistances[:max_levels],
++        "support": supports[0]["price"] if supports else None,
++        "resistance": resistances[0]["price"] if resistances else None,
++        "status": status,
++        "zone_width": zone_width,
++        "pivot_levels": levels,
++    }
++
++
+ # =============================================================================
+ # SIGNAL ENGINE
+ # =============================================================================
+@@ -663,6 +754,9 @@ class Signal:
+     mtf_status: str = "Not checked"
+     mtf_aligned: Optional[bool] = None
+     funding_rate: Optional[float] = None
++    support: Optional[float] = None
++    resistance: Optional[float] = None
++    sr_status: str = "Not checked"
+@@ -673,6 +767,7 @@ def analyze_single_timeframe(df: pd.DataFrame) -> Signal:
+     score = 0.0
+     reasons: List[str] = []
++    sr = find_support_resistance(df)
+     ema_status = "Neutral"
+@@ -831,6 +926,21 @@ def analyze_single_timeframe(df: pd.DataFrame) -> Signal:
+             trend_strength = "Weak"
+             reasons.append(f"ADX {adx_value:.1f}")
+ 
++    # S/R is contextual confirmation. Small weight avoids overriding the core
++    # indicator score, while confirmed breaks/retests contribute more evidence.
++    sr_status = sr["status"]
++    if sr_status == "Dekat support":
++        score += 0.5
++        reasons.append(f"🟢 Harga dekat support ({sr['support']:.8g})")
++    elif sr_status == "Dekat resistance":
++        score -= 0.5
++        reasons.append(f"🔴 Harga dekat resistance ({sr['resistance']:.8g})")
++    elif sr_status == "Breakout bullish":
++        score += 1.0
++        reasons.append(f"🚀 Breakout bullish melewati level S/R ({min(sr['pivot_levels'], key=lambda x: abs(float(last['close']) - x['price']))['price']:.8g})")
++    elif sr_status == "Breakdown bearish":
++        score -= 1.0
++        reasons.append(f"📉 Breakdown bearish melewati level S/R ({min(sr['pivot_levels'], key=lambda x: abs(float(last['close']) - x['price']))['price']:.8g})")
++    elif sr_status == "Retest support":
++        score += 0.5
++        reasons.append("✅ Retest support terdeteksi")
++    elif sr_status == "Retest resistance":
++        score -= 0.5
++        reasons.append("⚠️ Retest resistance terdeteksi")
++
+     if score >= 3.0:
+@@ -891,7 +1001,9 @@ def analyze_single_timeframe(df: pd.DataFrame) -> Signal:
+         trend_strength=trend_strength, adx_value=adx_value, reasons=reasons[:15],
+-        is_actionable=is_actionable, bias=bias, raw_score=round(score, 2)
++        is_actionable=is_actionable, bias=bias, raw_score=round(score, 2),
++        support=sr["support"], resistance=sr["resistance"], sr_status=sr_status,
+     )
+@@ -2282,7 +2394,8 @@ def create_chart(df: pd.DataFrame, symbol: str, signal: Optional[Signal] = None) -> go.Figure:
+     fig = make_subplots(
+         rows=4, cols=1, shared_xaxes=True,
+         row_heights=[0.45, 0.2, 0.2, 0.15],
+         vertical_spacing=0.03,
+-        subplot_titles=(f"{symbol} — Price / EMA / Bollinger Bands", "MACD", "RSI + Stochastic", "Volume")
++        subplot_titles=(f"{symbol} — Price / EMA / Bollinger / Support & Resistance", "MACD", "RSI + Stochastic", "Volume")
+     )
+@@ -2312,6 +2425,19 @@ def create_chart(df: pd.DataFrame, symbol: str, signal: Optional[Signal] = None) -> go.Figure:
+                                   fill="tonexty", fillcolor="rgba(150,150,150,0.08)"), row=1, col=1)
+ 
++    sr = find_support_resistance(df)
++    for index, item in enumerate(sr["supports"]):
++        level = item["price"]
++        fig.add_hline(y=level, line_dash="dot", line_color="#00c853", line_width=1.5,
++                      annotation_text=f"Support {index + 1}: {level:.6g}",
++                      annotation_position="bottom right", row=1, col=1)
++    for index, item in enumerate(sr["resistances"]):
++        level = item["price"]
++        fig.add_hline(y=level, line_dash="dot", line_color="#ff5252", line_width=1.5,
++                      annotation_text=f"Resistance {index + 1}: {level:.6g}",
++                      annotation_position="top right", row=1, col=1)
++    if sr["support"] is not None and sr["zone_width"] > 0:
++        fig.add_hrect(y0=sr["support"] - sr["zone_width"], y1=sr["support"] + sr["zone_width"],
++                      fillcolor="rgba(0,200,83,0.08)", line_width=0, row=1, col=1)
++    if sr["resistance"] is not None and sr["zone_width"] > 0:
++        fig.add_hrect(y0=sr["resistance"] - sr["zone_width"], y1=sr["resistance"] + sr["zone_width"],
++                      fillcolor="rgba(255,82,82,0.08)", line_width=0, row=1, col=1)
++
+     if signal and signal.direction != "HOLD":
+@@ -2483,6 +2609,19 @@ def _render_analysis_body(exchange_name: str, symbol: str, timeframe: str, limit: int, mtf_enabled: bool) -> None:
+         mtf_icon = "✅" if signal.mtf_aligned else ("⚠️" if signal.mtf_aligned is False else "ℹ️")
+         st.caption(f"{mtf_icon} MTF: {signal.mtf_status}")
+ 
++    sr_cols = st.columns(3)
++    sr_cols[0].metric("🟢 Support terdekat", f"${format_price(signal.support, symbol)}")
++    sr_cols[1].metric("🔴 Resistance terdekat", f"${format_price(signal.resistance, symbol)}")
++    sr_cols[2].metric("📍 Status S/R", signal.sr_status)
++    st.caption(
++        "Level S/R dihitung otomatis dari swing high/low dan dikelompokkan menjadi zona berdasarkan ATR. "
++        "Breakout/retest adalah indikasi teknikal, bukan jaminan arah harga."
++    )
++
+     if not signal.is_actionable:
+@@ -495,8 +495,8 @@ def render_market_overview_ui() -> None:
+-        "berlaku global — bukan cuma dari exchange futures OKX/Gate.io kamu). Berguna untuk melihat "
++        "berlaku global — bukan cuma dari exchange futures OKX kamu). Berguna untuk melihat "
+*** End Patch
+
+Catatan: hunks patch di atas menambahkan pivot S/R otomatis, zona dan garis chart, status breakout/retest pada analisa, serta hanya OKX pada daftar exchange. Terapkan dengan `git apply patches/support-resistance-okx.patch` dari root repo. Ini belum dijalankan pada app; sebaiknya jalankan syntax check dan tes Streamlit setelah patch diterapkan.
