@@ -21,12 +21,11 @@ def _get_secret(name: str) -> str:
 real.LOGIN_USERNAME = _get_secret("AIRISE_LOGIN_USERNAME")
 real.LOGIN_PASSWORD = _get_secret("AIRISE_LOGIN_PASSWORD")
 
-# Use one exchange provider for public market data and live trading.
+# Keep app visible in local/remote runs.
 real.EXCHANGES = {
     "OKX": {"id": ["okx"], "options": {"defaultType": "swap"}},
 }
 
-# Add pivot-based support/resistance levels to the analysis view and chart.
 install_support_resistance(real)
 
 
