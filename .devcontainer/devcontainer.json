@@ -18,12 +18,12 @@
   },
   "updateContentCommand": "[ -f requirements.txt ] && pip3 install --user -r requirements.txt",
   "postAttachCommand": {
-    "server": "python -m streamlit run app.py --server.address 0.0.0.0"
+    "server": "python -m streamlit run app.py --server.address 0.0.0.0 --server.port 8501"
   },
   "portsAttributes": {
     "8501": {
-      "label": "Application",
-      "onAutoForward": "openPreview"
+      "label": "AIRISE Streamlit",
+      "onAutoForward": "openBrowser"
     }
   },
   "forwardPorts": [

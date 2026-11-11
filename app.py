@@ -30,5 +30,24 @@ real.EXCHANGES = {
 install_support_resistance(real)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Start the dashboard and explain missing deployment configuration clearly."""
+    if not real.LOGIN_USERNAME or not real.LOGIN_PASSWORD:
+        real.st.set_page_config(page_title="AIRISE BOT Setup", page_icon="🤖")
+        real.st.error("AIRISE BOT berjalan, tetapi login belum dikonfigurasi.")
+        real.st.markdown(
+            "Atur `AIRISE_LOGIN_USERNAME` dan `AIRISE_LOGIN_PASSWORD` di environment "
+            "lokal, GitHub Codespaces Secrets, atau Streamlit Community Cloud → "
+            "App settings → Secrets. Setelah itu restart/reboot aplikasi."
+        )
+        real.st.code(
+            'AIRISE_LOGIN_USERNAME = "nama_login_anda"\n'
+            'AIRISE_LOGIN_PASSWORD = "password_kuat_anda"',
+            language="toml",
+        )
+        return
     real.main()
+
+
+if __name__ == "__main__":
+    main()

@@ -27,24 +27,26 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 export AIRISE_LOGIN_USERNAME="nama_login_anda"
 export AIRISE_LOGIN_PASSWORD="password_kuat_anda"
-python -m streamlit run app.py --server.address 0.0.0.0
+python -m streamlit run app.py
 ```
 
-Buka URL yang ditampilkan Streamlit, biasanya `http://localhost:8501`. Gunakan kredensial yang sudah Anda konfigurasi di atas. Jika perintah `streamlit` tidak ditemukan, gunakan `python -m streamlit`.
+Terminal akan menampilkan URL; buka `http://localhost:8501`. Jika aplikasi berjalan di Codespaces, buka tab **Ports**, pastikan port **8501** berstatus **Forwarded**, lalu klik **Open in Browser**. Jangan hanya membuka file Python di editor.
+
+Jika Streamlit tidak muncul, lihat pesan error di terminal. Coba `python -m pip install -r requirements.txt`, lalu restart dengan `python -m streamlit run app.py`. Pastikan port 8501 tidak dipakai proses lain.
 
 ## GitHub Codespaces
 
-Dependencies di-install dari `requirements.txt`. Atur `AIRISE_LOGIN_USERNAME` dan `AIRISE_LOGIN_PASSWORD` di Codespaces Secrets, lalu jalankan:
+Dependencies di-install dari `requirements.txt`. Atur `AIRISE_LOGIN_USERNAME` dan `AIRISE_LOGIN_PASSWORD` di Codespaces Secrets, lalu restart Codespace. Jika server tidak mulai otomatis, jalankan di terminal:
 
 ```bash
-python -m streamlit run app.py --server.address 0.0.0.0
+python -m streamlit run app.py
 ```
 
-Buka port **8501**.
+Buka port **8501** dari tab **Ports**. Konfigurasi `.streamlit/config.toml` mengikat server ke `0.0.0.0:8501` agar dapat di-forward.
 
 ## Streamlit Community Cloud
 
-Pilih repository ini dan set **Main file path** ke `app.py`. Tambahkan dua nilai berikut di **App settings → Secrets**:
+Pilih repository ini dan set **Main file path** ke `app.py`. Tambahkan dua nilai berikut di **App settings → Secrets**, lalu klik **Reboot app**:
 
 ```toml
 AIRISE_LOGIN_USERNAME = "nama_login_anda"
