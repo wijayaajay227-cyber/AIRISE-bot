@@ -5,3 +5,4 @@ numpy
 ta
 plotly
 requests
+python-telegram-bot>=20,<23

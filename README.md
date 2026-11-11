@@ -1,45 +1,62 @@
-# Futures Trading Bot Monitor PRO
+# AIRISE Futures Trading Monitor
 
-A Streamlit-based dashboard for monitoring Gate.io futures markets and simulating long/short trades.
+Dashboard Streamlit untuk melihat data futures dan simulasi trading. Entry point aplikasi adalah `app.py`.
 
-## Setup
+## Jalankan lokal
 
-1. Create a Python virtual environment (recommended):
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Butuh Python 3.10+.
 
-## Run locally
+### Windows (PowerShell)
 
-```bash
-streamlit run app.py --server.address 0.0.0.0
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+$env:AIRISE_LOGIN_USERNAME = "nama_login_anda"
+$env:AIRISE_LOGIN_PASSWORD = "password_kuat_anda"
+python -m streamlit run app.py
 ```
 
-Atau jalankan file utama langsung:
+### macOS / Linux
 
 ```bash
-streamlit run real.py --server.address 0.0.0.0
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+export AIRISE_LOGIN_USERNAME="nama_login_anda"
+export AIRISE_LOGIN_PASSWORD="password_kuat_anda"
+python -m streamlit run app.py --server.address 0.0.0.0
 ```
 
-## Deploy online
+Buka URL yang ditampilkan Streamlit, biasanya `http://localhost:8501`. Gunakan kredensial yang sudah Anda konfigurasi di atas. Jika perintah `streamlit` tidak ditemukan, gunakan `python -m streamlit`.
 
-This app is ready for Streamlit Cloud:
+## GitHub Codespaces
 
-1. Push the project to GitHub.
-2. Open Streamlit Cloud.
-3. Create a new app from the repository.
-4. Set the main file to `app.py` (atau `real.py` jika ingin memakai file utama langsung).
-5. Deploy.
+Dependencies di-install dari `requirements.txt`. Atur `AIRISE_LOGIN_USERNAME` dan `AIRISE_LOGIN_PASSWORD` di Codespaces Secrets, lalu jalankan:
 
-## Notes
+```bash
+python -m streamlit run app.py --server.address 0.0.0.0
+```
 
-- The app uses `ccxt` to fetch Gate.io market data.
-- If the live market data fails, Streamlit will display an error and fallback is limited to cached symbols.
-- Update `app.py` to adjust symbol list, timeframes, or indicator settings.
-## logo
-letakkan file logo PNG kamu di sini dengan nama: airise_logo.png
+Buka port **8501**.
+
+## Streamlit Community Cloud
+
+Pilih repository ini dan set **Main file path** ke `app.py`. Tambahkan dua nilai berikut di **App settings → Secrets**:
+
+```toml
+AIRISE_LOGIN_USERNAME = "nama_login_anda"
+AIRISE_LOGIN_PASSWORD = "password_kuat_anda"
+```
+
+## Telegram bot (opsional)
+
+Jalankan terpisah dari dashboard. Atur `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` sebagai environment variables/Secrets, lalu jalankan `python telegram_bot.py`. Jangan masukkan kredensial ke Git.
+
+## Keamanan
+
+Jangan commit token Telegram, API key/secret exchange, atau file `.env`. Token Telegram yang pernah terlanjur dipublikasikan di repository harus segera dicabut/dibuat ulang lewat BotFather. Mengganti isi file di commit terbaru tidak menghapus token dari riwayat Git.
+
+Koneksi trading real dapat mengirim order sungguhan. Mulai dari mode demo dan jangan berikan izin withdrawal pada API key. Aplikasi ini bukan nasihat keuangan.

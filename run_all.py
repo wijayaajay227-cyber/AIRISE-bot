@@ -1,21 +1,17 @@
-import threading
+"""Convenience launcher for the AIRISE Streamlit dashboard.
+
+The Telegram bot is optional and should be run separately with its own token.
+"""
+
 import subprocess
-import time
+import sys
 
-def run_telegram_bot():
-    subprocess.run(["python", "telegram_bot.py"])
 
-def run_streamlit():
-    subprocess.run(["streamlit", "run", "app.py"])
+def main() -> int:
+    return subprocess.call(
+        [sys.executable, "-m", "streamlit", "run", "app.py", "--server.address", "0.0.0.0"]
+    )
+
 
 if __name__ == "__main__":
-    # Jalankan di thread terpisah
-    bot_thread = threading.Thread(target=run_telegram_bot)
-    web_thread = threading.Thread(target=run_streamlit)
-    
-    bot_thread.start()
-    time.sleep(2)  # Tunggu bot start
-    web_thread.start()
-    
-    bot_thread.join()
-    web_thread.join()
+    raise SystemExit(main())
